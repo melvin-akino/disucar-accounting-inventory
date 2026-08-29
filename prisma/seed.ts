@@ -28,80 +28,150 @@ async function main() {
   const mnl = await prisma.warehouse.upsert({
     where: { code: "MNL" },
     update: {},
-    create: { code: "MNL", name: "Manila — Pasig DC", city: "Pasig" },
+    // Codes are load-bearing: INVENTORY_ACCOUNT_BY_WAREHOUSE_CODE in src/lib/coa.ts maps
+    // MNL/CEB/DVO/URD to GL accounts 1200-1230. Rename the yards, never the codes.
+    create: { code: "MNL", name: "Urdaneta Main Yard", city: "Urdaneta" },
   });
   const ceb = await prisma.warehouse.upsert({
     where: { code: "CEB" },
     update: {},
-    create: { code: "CEB", name: "Cebu DC", city: "Cebu City" },
+    create: { code: "CEB", name: "Dagupan Yard", city: "Dagupan" },
   });
   const dvo = await prisma.warehouse.upsert({
     where: { code: "DVO" },
     update: {},
-    create: { code: "DVO", name: "Davao DC", city: "Davao City" },
+    create: { code: "DVO", name: "Rosales Aggregates Depot", city: "Rosales" },
   });
 
-  // ── Customers (grocery/FMCG retail — Disucar is based in Urdaneta, Pangasinan) ──
+  // ── Customers (construction trade — Disucar is based in Urdaneta, Pangasinan) ──
   const customers = await Promise.all([
-    prisma.customer.upsert({ where: { code: "C-2001" }, update: {}, create: { code: "C-2001", name: "Puregold Price Club — Urdaneta",   type: "SUPERMARKET",     tin: "000-111-222-000", region: "I",  city: "Urdaneta",   terms: "Net 30", creditLimit: 500_000, contactEmail: "procurement@puregold-urdaneta.ph" } }),
-    prisma.customer.upsert({ where: { code: "C-2002" }, update: {}, create: { code: "C-2002", name: "SM Savemore Market — Dagupan",     type: "SUPERMARKET",     tin: "000-222-333-000", region: "I",  city: "Dagupan",    terms: "Net 30", creditLimit: 450_000, contactEmail: "orders@savemoredagupan.ph" } }),
-    prisma.customer.upsert({ where: { code: "C-2003" }, update: {}, create: { code: "C-2003", name: "Alfamart — Urdaneta",              type: "GROCERY",         tin: "000-333-444-000", region: "I",  city: "Urdaneta",   terms: "Net 15", creditLimit: 150_000, contactEmail: "store@alfamarturdaneta.ph" } }),
-    prisma.customer.upsert({ where: { code: "C-2004" }, update: {}, create: { code: "C-2004", name: "Fely's Mini Mart",                 type: "GROCERY",         tin: "000-444-555-000", region: "I",  city: "San Carlos", terms: "Net 15", creditLimit: 60_000,  contactEmail: "fely@felysminimart.ph" } }),
-    prisma.customer.upsert({ where: { code: "C-2005" }, update: {}, create: { code: "C-2005", name: "Villaflor General Merchandise",    type: "WHOLESALER",      tin: "000-555-666-000", region: "I",  city: "Rosales",    terms: "Net 30", creditLimit: 300_000, contactEmail: "orders@villaflorgm.ph" } }),
-    prisma.customer.upsert({ where: { code: "C-2006" }, update: {}, create: { code: "C-2006", name: "Dela Cruz Sari-Sari Store",        type: "SARI_SARI_STORE", tin: "000-666-777-000", region: "I",  city: "Urdaneta",   terms: "COD",    creditLimit: 25_000,  contactEmail: "delacruzstore@gmail.com" } }),
-    prisma.customer.upsert({ where: { code: "C-2007" }, update: {}, create: { code: "C-2007", name: "Aling Nena's Store — Baguio Public Market", type: "SARI_SARI_STORE", tin: "000-777-888-000", region: "CAR", city: "Baguio",   terms: "COD",    creditLimit: 40_000,  contactEmail: "alingnena@gmail.com" } }),
-    prisma.customer.upsert({ where: { code: "C-2008" }, update: {}, create: { code: "C-2008", name: "CSI Supermarket — Dagupan",        type: "SUPERMARKET",     tin: "000-888-999-000", region: "I",  city: "Dagupan",    terms: "Net 30", creditLimit: 380_000, contactEmail: "purchasing@csisupermarket.ph" } }),
+    prisma.customer.upsert({ where: { code: "C-2001" }, update: {}, create: { code: "C-2001", name: "Bautista Construction & Development",  type: "CONTRACTOR",     tin: "000-111-222-000", region: "I",  city: "Urdaneta",   terms: "Net 30", creditLimit: 500_000, contactEmail: "procurement@bautistaconstruction.ph", blanketDiscountPct: 3 } }),
+    prisma.customer.upsert({ where: { code: "C-2002" }, update: {}, create: { code: "C-2002", name: "Pangasinan Builders Supply",          type: "HARDWARE",       tin: "000-222-333-000", region: "I",  city: "Dagupan",    terms: "Net 30", creditLimit: 450_000, contactEmail: "orders@pangasinanbuilders.ph" } }),
+    prisma.customer.upsert({ where: { code: "C-2003" }, update: {}, create: { code: "C-2003", name: "Sison Hardware & Construction Supply", type: "HARDWARE",      tin: "000-333-444-000", region: "I",  city: "Urdaneta",   terms: "Net 15", creditLimit: 150_000, contactEmail: "sales@sisonhardware.ph" } }),
+    prisma.customer.upsert({ where: { code: "C-2004" }, update: {}, create: { code: "C-2004", name: "Reyes Engineering Works",             type: "CONTRACTOR",     tin: "000-444-555-000", region: "I",  city: "San Carlos", terms: "Net 15", creditLimit: 60_000,  contactEmail: "admin@reyesengineering.ph" } }),
+    prisma.customer.upsert({ where: { code: "C-2005" }, update: {}, create: { code: "C-2005", name: "Villaflor Aggregates Trading",        type: "WHOLESALER",     tin: "000-555-666-000", region: "I",  city: "Rosales",    terms: "Net 30", creditLimit: 300_000, contactEmail: "orders@villaflorgm.ph", blanketDiscountPct: 5 } }),
+    prisma.customer.upsert({ where: { code: "C-2006" }, update: {}, create: { code: "C-2006", name: "Dela Cruz Homebuilders",              type: "WALK_IN",        tin: "000-666-777-000", region: "I",  city: "Urdaneta",   terms: "COD",    creditLimit: 25_000,  contactEmail: "delacruzbuild@gmail.com" } }),
+    prisma.customer.upsert({ where: { code: "C-2007" }, update: {}, create: { code: "C-2007", name: "Baguio Highlands Development Corp.",  type: "DEVELOPER",      tin: "000-777-888-000", region: "CAR", city: "Baguio",     terms: "Net 45", creditLimit: 40_000,  contactEmail: "projects@baguiohighlands.ph" } }),
+    prisma.customer.upsert({ where: { code: "C-2008" }, update: {}, create: { code: "C-2008", name: "CSI Infrastructure Builders",         type: "CONTRACTOR",     tin: "000-888-999-000", region: "I",  city: "Dagupan",    terms: "Net 30", creditLimit: 380_000, contactEmail: "purchasing@csibuilders.ph" } }),
   ]);
 
-  // ── Suppliers (the principals Disucar Sales distributes for) ────────────────────
+  // ── Suppliers (cement, steel and quarry principals) ─────────────────────────────
   const suppliers = await Promise.all([
-    prisma.supplier.upsert({ where: { code: "SUP-101" }, update: {}, create: { code: "SUP-101", name: "Monde Nissin Corporation",     contactEmail: "orders@mondenissin.com",  city: "Bulacan", leadTimeDays: 7,  status: "ACTIVE" as SupplierStatus } }),
-    prisma.supplier.upsert({ where: { code: "SUP-102" }, update: {}, create: { code: "SUP-102", name: "Century Pacific Food, Inc.",   contactEmail: "trade@centurypacific.com.ph", city: "Taguig", leadTimeDays: 10, status: "ACTIVE" as SupplierStatus } }),
-    prisma.supplier.upsert({ where: { code: "SUP-103" }, update: {}, create: { code: "SUP-103", name: "Champion Household Products",  contactEmail: "sales@championhousehold.ph",  city: "Manila", leadTimeDays: 10, status: "ACTIVE" as SupplierStatus } }),
+    prisma.supplier.upsert({ where: { code: "SUP-101" }, update: {}, create: { code: "SUP-101", name: "Northern Cement Corporation",      contactEmail: "orders@northerncement.com.ph", city: "Sison, Pangasinan", leadTimeDays: 7,  status: "ACTIVE" as SupplierStatus } }),
+    prisma.supplier.upsert({ where: { code: "SUP-102" }, update: {}, create: { code: "SUP-102", name: "Pag-asa Steel Works, Inc.",        contactEmail: "trade@pagasasteel.com.ph",     city: "Pasig",             leadTimeDays: 10, status: "ACTIVE" as SupplierStatus } }),
+    prisma.supplier.upsert({ where: { code: "SUP-103" }, update: {}, create: { code: "SUP-103", name: "Agno River Aggregates Quarry",     contactEmail: "dispatch@agnoaggregates.ph",   city: "Rosales",           leadTimeDays: 2,  status: "ACTIVE" as SupplierStatus } }),
   ]);
 
   // ── Product categories (managed by catalog admins — see catalog/actions.ts) ─
   await Promise.all([
-    prisma.category.upsert({ where: { code: "NOODLES" },      update: {}, create: { code: "NOODLES",      name: "Noodles",      sortOrder: 1 } }),
-    prisma.category.upsert({ where: { code: "BISCUITS" },     update: {}, create: { code: "BISCUITS",     name: "Biscuits",     sortOrder: 2 } }),
-    prisma.category.upsert({ where: { code: "CONDIMENTS" },   update: {}, create: { code: "CONDIMENTS",   name: "Condiments",   sortOrder: 3 } }),
-    prisma.category.upsert({ where: { code: "DAIRY" },        update: {}, create: { code: "DAIRY",        name: "Dairy",        sortOrder: 4 } }),
-    prisma.category.upsert({ where: { code: "CANNED_GOODS" }, update: {}, create: { code: "CANNED_GOODS", name: "Canned Goods", sortOrder: 5 } }),
-    prisma.category.upsert({ where: { code: "HOUSEHOLD" },    update: {}, create: { code: "HOUSEHOLD",    name: "Household",    sortOrder: 6 } }),
-    prisma.category.upsert({ where: { code: "OTHER" },        update: {}, create: { code: "OTHER",        name: "Other",        sortOrder: 99 } }),
+    prisma.category.upsert({ where: { code: "CEMENT" },     update: {}, create: { code: "CEMENT",     name: "Cement & Binders",   sortOrder: 1 } }),
+    prisma.category.upsert({ where: { code: "AGGREGATES" }, update: {}, create: { code: "AGGREGATES", name: "Aggregates",         sortOrder: 2 } }),
+    prisma.category.upsert({ where: { code: "HAULING" },    update: {}, create: { code: "HAULING",    name: "Hauling & Delivery", sortOrder: 3 } }),
+    prisma.category.upsert({ where: { code: "STEEL" },      update: {}, create: { code: "STEEL",      name: "Steel & Rebar",      sortOrder: 4 } }),
+    prisma.category.upsert({ where: { code: "LUMBER" },     update: {}, create: { code: "LUMBER",     name: "Lumber & Panels",    sortOrder: 5 } }),
+    prisma.category.upsert({ where: { code: "HARDWARE" },   update: {}, create: { code: "HARDWARE",   name: "Hardware",           sortOrder: 6 } }),
+    prisma.category.upsert({ where: { code: "OTHER" },      update: {}, create: { code: "OTHER",      name: "Other",              sortOrder: 99 } }),
   ]);
 
-  // ── Catalog (Monde Nissin division: Lucky Me!, Monde Nissin, Monde M.Y. San,
-  //    Mama Sita's, Dutch Mill — plus Century Tuna and Champion per Dominic) ──
-  const catalog = await Promise.all([
-    // Lucky Me! — instant noodles
-    prisma.catalogItem.upsert({ where: { sku: "LM-PC-ORIG-60"  }, update: {}, create: { sku: "LM-PC-ORIG-60",  name: "Lucky Me! Pancit Canton Original 60g",       category: "NOODLES", unit: "pc", unitPrice: 13.50, brand: "Lucky Me!",     supplierId: suppliers[0].id, active: true } }),
-    prisma.catalogItem.upsert({ where: { sku: "LM-PC-CHILI-60" }, update: {}, create: { sku: "LM-PC-CHILI-60", name: "Lucky Me! Pancit Canton Chilimansi 60g",     category: "NOODLES", unit: "pc", unitPrice: 13.50, brand: "Lucky Me!",     supplierId: suppliers[0].id, active: true } }),
-    prisma.catalogItem.upsert({ where: { sku: "LM-BEEF-55"     }, update: {}, create: { sku: "LM-BEEF-55",     name: "Lucky Me! Beef Noodles 55g",                 category: "NOODLES", unit: "pc", unitPrice: 13.00, brand: "Lucky Me!",     supplierId: suppliers[0].id, active: true } }),
-    prisma.catalogItem.upsert({ where: { sku: "LM-GOCUP-70"    }, update: {}, create: { sku: "LM-GOCUP-70",    name: "Lucky Me! Go Cup Pancit Canton 70g",         category: "NOODLES", unit: "pc", unitPrice: 22.00, brand: "Lucky Me!",     supplierId: suppliers[0].id, active: true } }),
-    // Monde Nissin / Monde M.Y. San — biscuits
-    prisma.catalogItem.upsert({ where: { sku: "MND-CREAMO-316" }, update: {}, create: { sku: "MND-CREAMO-316", name: "Monde Cream-O Sandwich Cookies 316g",        category: "BISCUITS", unit: "pack", unitPrice: 58.00, brand: "Monde Nissin",  supplierId: suppliers[0].id, active: true } }),
-    prisma.catalogItem.upsert({ where: { sku: "MND-BUTTER-240" }, update: {}, create: { sku: "MND-BUTTER-240", name: "Monde Special Butter Cookies 240g",          category: "BISCUITS", unit: "pack", unitPrice: 95.00, brand: "Monde Nissin",  supplierId: suppliers[0].id, active: true } }),
-    prisma.catalogItem.upsert({ where: { sku: "MYS-SKYFLK-250" }, update: {}, create: { sku: "MYS-SKYFLK-250", name: "SkyFlakes Crackers 10x25g",                  category: "BISCUITS", unit: "pack", unitPrice: 48.00, brand: "Monde M.Y. San", supplierId: suppliers[0].id, active: true } }),
-    prisma.catalogItem.upsert({ where: { sku: "MYS-FITA-300"   }, update: {}, create: { sku: "MYS-FITA-300",   name: "Fita Crackers 300g",                         category: "BISCUITS", unit: "pack", unitPrice: 52.00, brand: "Monde M.Y. San", supplierId: suppliers[0].id, active: true } }),
-    // Mama Sita's — sauces & seasoning mixes
-    prisma.catalogItem.upsert({ where: { sku: "MS-OYSTER-405"  }, update: {}, create: { sku: "MS-OYSTER-405",  name: "Mama Sita's Oyster Sauce 405g",              category: "CONDIMENTS", unit: "btl",  unitPrice: 68.00, brand: "Mama Sita's",  supplierId: suppliers[0].id, active: true } }),
-    prisma.catalogItem.upsert({ where: { sku: "MS-SASWEET-50"  }, update: {}, create: { sku: "MS-SASWEET-50",  name: "Mama Sita's Sweet & Sour Sauce Mix 50g",     category: "CONDIMENTS", unit: "pack", unitPrice: 15.00, brand: "Mama Sita's",  supplierId: suppliers[0].id, active: true } }),
-    // Dutch Mill — yogurt drinks
-    prisma.catalogItem.upsert({ where: { sku: "DM-YOG-ORIG-180"  }, update: {}, create: { sku: "DM-YOG-ORIG-180",  name: "Dutch Mill Yogurt Drink Original 180ml",   category: "DAIRY", unit: "btl", unitPrice: 18.00, brand: "Dutch Mill", supplierId: suppliers[0].id, active: true } }),
-    prisma.catalogItem.upsert({ where: { sku: "DM-YOG-STRAW-180" }, update: {}, create: { sku: "DM-YOG-STRAW-180", name: "Dutch Mill Yogurt Drink Strawberry 180ml", category: "DAIRY", unit: "btl", unitPrice: 18.00, brand: "Dutch Mill", supplierId: suppliers[0].id, active: true } }),
-    // Century Tuna — canned goods
-    prisma.catalogItem.upsert({ where: { sku: "CT-FLAKE-OIL-155"  }, update: {}, create: { sku: "CT-FLAKE-OIL-155",  name: "Century Tuna Flakes in Oil 155g",    category: "CANNED_GOODS", unit: "can", unitPrice: 38.00, brand: "Century Tuna", supplierId: suppliers[1].id, active: true } }),
-    prisma.catalogItem.upsert({ where: { sku: "CT-HOTSPICY-155"   }, update: {}, create: { sku: "CT-HOTSPICY-155",   name: "Century Tuna Hot & Spicy 155g",      category: "CANNED_GOODS", unit: "can", unitPrice: 40.00, brand: "Century Tuna", supplierId: suppliers[1].id, active: true } }),
-    // Champion — household / detergent
-    prisma.catalogItem.upsert({ where: { sku: "CHM-POWDER-68" }, update: {}, create: { sku: "CHM-POWDER-68", name: "Champion Detergent Powder 68g",   category: "HOUSEHOLD", unit: "sachet", unitPrice: 8.00,  brand: "Champion", supplierId: suppliers[2].id, active: true } }),
-    prisma.catalogItem.upsert({ where: { sku: "CHM-BAR-380"   }, update: {}, create: { sku: "CHM-BAR-380",   name: "Champion Detergent Bar 380g",     category: "HOUSEHOLD", unit: "bar",    unitPrice: 28.00, brand: "Champion", supplierId: suppliers[2].id, active: true } }),
+  // ── Catalog ────────────────────────────────────────────────────────────────
+  // Three kinds of item (see ItemKind in schema.prisma):
+  //   PACKAGED    — cement by the bag, rebar by the length, plywood by the sheet
+  //   BULK        — stockpile material held and costed per cubic metre
+  //   BULK_VESSEL — a truck size that draws its volume from one of those piles
+  const packaged = await Promise.all([
+    // Cement & binders
+    prisma.catalogItem.upsert({ where: { sku: "CEM-PORT-40"   }, update: {}, create: { sku: "CEM-PORT-40",   name: "Portland Cement Type 1 — 40kg",    category: "CEMENT",   unit: "bag",   unitPrice: 265.00, wholesalePrice: 245.00, wholesaleMinQty: 50,  brand: "Northern Cement", supplierId: suppliers[0].id, active: true } }),
+    prisma.catalogItem.upsert({ where: { sku: "CEM-POZZ-40"   }, update: {}, create: { sku: "CEM-POZZ-40",   name: "Pozzolan Cement — 40kg",           category: "CEMENT",   unit: "bag",   unitPrice: 250.00, wholesalePrice: 232.00, wholesaleMinQty: 50,  brand: "Northern Cement", supplierId: suppliers[0].id, active: true } }),
+    prisma.catalogItem.upsert({ where: { sku: "CEM-MASON-40"  }, update: {}, create: { sku: "CEM-MASON-40",  name: "Masonry Cement — 40kg",            category: "CEMENT",   unit: "bag",   unitPrice: 240.00, wholesalePrice: 224.00, wholesaleMinQty: 50,  brand: "Northern Cement", supplierId: suppliers[0].id, active: true } }),
+
+    // Steel & rebar
+    prisma.catalogItem.upsert({ where: { sku: "RSB-10-6M"     }, update: {}, create: { sku: "RSB-10-6M",     name: "Deformed Bar 10mm x 6m",           category: "STEEL",    unit: "pc",    unitPrice: 185.00, wholesalePrice: 172.00, wholesaleMinQty: 100, brand: "Pag-asa Steel",   supplierId: suppliers[1].id, active: true } }),
+    prisma.catalogItem.upsert({ where: { sku: "RSB-12-6M"     }, update: {}, create: { sku: "RSB-12-6M",     name: "Deformed Bar 12mm x 6m",           category: "STEEL",    unit: "pc",    unitPrice: 265.00, wholesalePrice: 248.00, wholesaleMinQty: 100, brand: "Pag-asa Steel",   supplierId: suppliers[1].id, active: true } }),
+    prisma.catalogItem.upsert({ where: { sku: "RSB-16-6M"     }, update: {}, create: { sku: "RSB-16-6M",     name: "Deformed Bar 16mm x 6m",           category: "STEEL",    unit: "pc",    unitPrice: 470.00, wholesalePrice: 442.00, wholesaleMinQty: 50,  brand: "Pag-asa Steel",   supplierId: suppliers[1].id, active: true } }),
+    prisma.catalogItem.upsert({ where: { sku: "GITIE-16"      }, update: {}, create: { sku: "GITIE-16",      name: "G.I. Tie Wire #16 — 1kg",          category: "STEEL",    unit: "kg",    unitPrice: 95.00,  wholesalePrice: 86.00,  wholesaleMinQty: 20,  brand: "Pag-asa Steel",   supplierId: suppliers[1].id, active: true } }),
+
+    // Lumber & panels
+    prisma.catalogItem.upsert({ where: { sku: "PLY-MARINE-12" }, update: {}, create: { sku: "PLY-MARINE-12", name: "Marine Plywood 1/2in x 4ft x 8ft", category: "LUMBER",   unit: "sheet", unitPrice: 890.00, wholesalePrice: 835.00, wholesaleMinQty: 20,  active: true } }),
+    prisma.catalogItem.upsert({ where: { sku: "PLY-ORD-6"     }, update: {}, create: { sku: "PLY-ORD-6",     name: "Ordinary Plywood 1/4in x 4ft x 8ft", category: "LUMBER", unit: "sheet", unitPrice: 420.00, wholesalePrice: 392.00, wholesaleMinQty: 20,  active: true } }),
+    prisma.catalogItem.upsert({ where: { sku: "LUM-COCO-2X3"  }, update: {}, create: { sku: "LUM-COCO-2X3",  name: "Coco Lumber 2in x 3in x 10ft",     category: "LUMBER",   unit: "pc",    unitPrice: 165.00, wholesalePrice: 152.00, wholesaleMinQty: 50,  active: true } }),
+
+    // Hardware
+    prisma.catalogItem.upsert({ where: { sku: "CHB-4"         }, update: {}, create: { sku: "CHB-4",         name: "Concrete Hollow Block 4in",        category: "HARDWARE", unit: "pc",    unitPrice: 18.00,  wholesalePrice: 15.50,  wholesaleMinQty: 500, active: true } }),
+    prisma.catalogItem.upsert({ where: { sku: "CHB-6"         }, update: {}, create: { sku: "CHB-6",         name: "Concrete Hollow Block 6in",        category: "HARDWARE", unit: "pc",    unitPrice: 26.00,  wholesalePrice: 22.50,  wholesaleMinQty: 500, active: true } }),
+    prisma.catalogItem.upsert({ where: { sku: "CWN-4"         }, update: {}, create: { sku: "CWN-4",         name: "Common Wire Nail 4in — 1kg",       category: "HARDWARE", unit: "kg",    unitPrice: 88.00,  wholesalePrice: 79.00,  wholesaleMinQty: 25,  active: true } }),
   ]);
+
+  // ── Stockpile materials ────────────────────────────────────────────────────
+  // Received by the truckload (typically 18 m³ at a total delivered cost) and held per
+  // cubic metre. unitPrice is the walk-in rate per m³; the cost COGS uses comes from
+  // each delivery's own lot, never from this row.
+  const bulk = await Promise.all([
+    prisma.catalogItem.upsert({ where: { sku: "AGG-SAND"     }, update: {}, create: { sku: "AGG-SAND",     name: "Washed Sand",       category: "AGGREGATES", unit: "m3", itemKind: "BULK", unitPrice: 1250.00, wholesalePrice: 1150.00, wholesaleMinQty: 18, supplierId: suppliers[2].id, active: true } }),
+    prisma.catalogItem.upsert({ where: { sku: "AGG-GRAVEL"   }, update: {}, create: { sku: "AGG-GRAVEL",   name: "Gravel",            category: "AGGREGATES", unit: "m3", itemKind: "BULK", unitPrice: 1400.00, wholesalePrice: 1290.00, wholesaleMinQty: 18, supplierId: suppliers[2].id, active: true } }),
+    prisma.catalogItem.upsert({ where: { sku: "AGG-CRUSH-34" }, update: {}, create: { sku: "AGG-CRUSH-34", name: "3/4 Crushed Stone", category: "AGGREGATES", unit: "m3", itemKind: "BULK", unitPrice: 1550.00, wholesalePrice: 1430.00, wholesaleMinQty: 18, supplierId: suppliers[2].id, active: true } }),
+    prisma.catalogItem.upsert({ where: { sku: "AGG-MIXED"    }, update: {}, create: { sku: "AGG-MIXED",    name: "Mixed Gravel",      category: "AGGREGATES", unit: "m3", itemKind: "BULK", unitPrice: 1180.00, wholesalePrice: 1090.00, wholesaleMinQty: 18, supplierId: suppliers[2].id, active: true } }),
+  ]);
+  const bulkBySku = Object.fromEntries(bulk.map((b) => [b.sku, b]));
+
+  // ── Truck sizes ────────────────────────────────────────────────────────────
+  // Sellable loads. A vessel holds no stock of its own: one sold draws bulkVolumeM3
+  // from the pile it references, so 3 mini-trucks of sand is a single line of qty 3
+  // drawing 7.5 m³. The dimensions are what the customer is quoted.
+  const TRUCK_SIZES = [
+    { code: "MT", label: "Mini-Truck", volumeM3: 2.5,  lengthM: 2.00, widthM: 1.50, heightM: 0.833 },
+    { code: "ET", label: "Elf Truck",  volumeM3: 4.0,  lengthM: 2.60, widthM: 1.60, heightM: 0.962 },
+    { code: "DT", label: "Dump Truck", volumeM3: 10.0, lengthM: 3.60, widthM: 2.10, heightM: 1.323 },
+  ];
+  const HAULED = [
+    { sku: "AGG-SAND",     short: "Sand",         ratePerM3: 1250 },
+    { sku: "AGG-GRAVEL",   short: "Gravel",       ratePerM3: 1400 },
+    { sku: "AGG-CRUSH-34", short: "3/4 Crush",    ratePerM3: 1550 },
+    { sku: "AGG-MIXED",    short: "Mixed Gravel", ratePerM3: 1180 },
+  ];
+  // Delivery charge baked into the load price — a truck is priced as a truck, not as
+  // volume × rate, which is why the vessel carries its own price rather than deriving one.
+  const HAUL_FEE = 800;
+
+  const vessels = await Promise.all(
+    TRUCK_SIZES.flatMap((t) =>
+      HAULED.map((m) => {
+        const sku = `${t.code}-${m.sku.replace("AGG-", "")}`;
+        const retail = Math.round((m.ratePerM3 * t.volumeM3 + HAUL_FEE) / 10) * 10;
+        return prisma.catalogItem.upsert({
+          where: { sku },
+          update: {},
+          create: {
+            sku,
+            name: `${t.label} — ${m.short}`,
+            category: "HAULING",
+            unit: "load",
+            itemKind: "BULK_VESSEL",
+            bulkSourceId: bulkBySku[m.sku].id,
+            bulkVolumeM3: t.volumeM3,
+            lengthM: t.lengthM,
+            widthM: t.widthM,
+            heightM: t.heightM,
+            unitPrice: retail,
+            wholesalePrice: Math.round((m.ratePerM3 * t.volumeM3 * 0.92 + HAUL_FEE) / 10) * 10,
+            wholesaleMinQty: 2,
+            active: true,
+          },
+        });
+      })
+    )
+  );
+
+  const catalog = [...packaged, ...bulk, ...vessels];
 
   const catMap = Object.fromEntries(catalog.map((c) => [c.sku, c]));
 
   // ── Stock ─────────────────────────────────────────────────────────────────
-  for (const item of catalog) {
+  // Truck sizes are deliberately skipped: a vessel holds no stock of its own, it draws
+  // from the pile it references. Giving it a Stock row would double-count the material.
+  const stocked = [...packaged, ...bulk];
+
+  for (const item of stocked) {
+    const isBulk = item.itemKind === "BULK";
     for (const wh of [mnl, ceb]) {
       await prisma.stock.upsert({
         where: { skuId_warehouseId: { skuId: item.id, warehouseId: wh.id } },
@@ -109,11 +179,61 @@ async function main() {
         create: {
           skuId: item.id,
           warehouseId: wh.id,
-          onHand: 2000,
+          // Piles are held in cubic metres, packaged goods in their own units.
+          onHand: isBulk ? 54 : 2000,
           reserved: 0,
-          reorderAt: 200,
+          reorderAt: isBulk ? 18 : 200,
         },
       });
+    }
+  }
+
+  // ── Cost layers ────────────────────────────────────────────────────────────
+  // Every SKU gets two receipts at different costs, a week apart, so FIFO has
+  // something real to consume and margin reporting is not flat from day one. This is
+  // the price movement the whole costing rework exists for: cement at 200 one week and
+  // 205 the next must stay two distinguishable layers.
+  //
+  // Aggregates are received as truckloads of 18 m³ at a total delivered cost, so their
+  // per-m³ cost is that total spread over the load (7,000 / 18 = 388.8889).
+  const TRUCKLOAD_M3 = 18;
+  const bulkLoadCost: Record<string, [number, number]> = {
+    "AGG-SAND":     [7_000, 7_400],
+    "AGG-GRAVEL":   [8_200, 8_500],
+    "AGG-CRUSH-34": [9_100, 9_450],
+    "AGG-MIXED":    [6_600, 6_900],
+  };
+
+  for (const item of stocked) {
+    const isBulk = item.itemKind === "BULK";
+    const retail = Number(item.unitPrice);
+
+    // Two deliveries: the older layer part-drawn, the newer one intact.
+    const layers = isBulk
+      ? bulkLoadCost[item.sku].map((total) => total / TRUCKLOAD_M3)
+      : [retail * 0.72, retail * 0.75];
+    const received = isBulk ? [TRUCKLOAD_M3, TRUCKLOAD_M3] : [1200, 1200];
+    const remaining = isBulk ? [18, 36] : [800, 1200];
+
+    for (const wh of [mnl, ceb]) {
+      for (let i = 0; i < layers.length; i++) {
+        const lotNumber = `${item.sku}-L${i + 1}`;
+        const exists = await prisma.lot.findFirst({
+          where: { lotNumber, skuId: item.id, warehouseId: wh.id },
+        });
+        if (exists) continue;
+        await prisma.lot.create({
+          data: {
+            lotNumber,
+            skuId: item.id,
+            warehouseId: wh.id,
+            receivedQty: received[i],
+            remainingQty: remaining[i] / 2,
+            unitCost: Math.round(layers[i] * 10000) / 10000,
+            receivedAt: daysAgo(i === 0 ? 21 : 7),
+          },
+        });
+      }
     }
   }
 
@@ -144,7 +264,7 @@ async function main() {
     where: { email: "procurement@puregold-urdaneta.ph" },
     update: {},
     create: {
-      email: "procurement@puregold-urdaneta.ph", name: "Puregold Urdaneta Procurement",
+      email: "procurement@puregold-urdaneta.ph", name: "Bautista Construction Procurement",
       passwordHash: pw, role: "CUSTOMER" as Role, customerId: customers[0].id,
     },
   });
@@ -157,14 +277,14 @@ async function main() {
 
   // ── Customer-linked login accounts (one per retail account) ─────────────────
   const customerUsers = [
-    { email: "procurement@puregold-urdaneta.ph", name: "Puregold Urdaneta Procurement", custIdx: 0 },
-    { email: "orders@savemoredagupan.ph",         name: "SM Savemore Dagupan Orders",    custIdx: 1 },
-    { email: "store@alfamarturdaneta.ph",         name: "Alfamart Urdaneta Store",       custIdx: 2 },
-    { email: "fely@felysminimart.ph",             name: "Fely's Mini Mart",              custIdx: 3 },
+    { email: "procurement@puregold-urdaneta.ph", name: "Bautista Construction Procurement", custIdx: 0 },
+    { email: "orders@savemoredagupan.ph",         name: "Pangasinan Builders Supply Orders",    custIdx: 1 },
+    { email: "store@alfamarturdaneta.ph",         name: "Sison Hardware Store",       custIdx: 2 },
+    { email: "fely@felysminimart.ph",             name: "Reyes Engineering Works",              custIdx: 3 },
     { email: "orders@villaflorgm.ph",             name: "Villaflor GM Orders",           custIdx: 4 },
-    { email: "delacruzstore@gmail.com",           name: "Dela Cruz Sari-Sari Store",      custIdx: 5 },
+    { email: "delacruzstore@gmail.com",           name: "Dela Cruz Homebuilders",      custIdx: 5 },
     { email: "alingnena@gmail.com",                name: "Aling Nena's Store",             custIdx: 6 },
-    { email: "purchasing@csisupermarket.ph",       name: "CSI Supermarket Purchasing",     custIdx: 7 },
+    { email: "purchasing@csisupermarket.ph",       name: "CSI Infrastructure Builders Purchasing",     custIdx: 7 },
   ];
   for (const u of customerUsers) {
     await prisma.user.upsert({
@@ -203,40 +323,42 @@ async function main() {
     }
   }
 
-  // Quantities and prices below are denominated in cases (see CatalogItem.unit /
-  // unitsPerCase) — Disucar trades by the case, not the individual piece.
-  await upsertOrder("SO-2026-0418", customers[0].id, mnl.id, "PENDING",   false, [{ sku: "LM-PC-ORIG-60",  qty: 10, unitPrice: 972.00 },  { sku: "LM-BEEF-55",      qty: 8,  unitPrice: 936.00 }]);
-  await upsertOrder("SO-2026-0417", customers[1].id, mnl.id, "APPROVED",  false, [{ sku: "MYS-SKYFLK-250", qty: 15, unitPrice: 576.00 },  { sku: "MND-BUTTER-240",  qty: 10, unitPrice: 1140.00 }]);
-  await upsertOrder("SO-2026-0416", customers[2].id, ceb.id, "PREPARING", false, [{ sku: "MS-OYSTER-405",  qty: 12, unitPrice: 816.00 }]);
-  await upsertOrder("SO-2026-0415", customers[3].id, mnl.id, "SHIPPED",   false, [{ sku: "DM-YOG-ORIG-180", qty: 10, unitPrice: 432.00 }, { sku: "DM-YOG-STRAW-180", qty: 8,  unitPrice: 432.00 }]);
-  await upsertOrder("SO-2026-0413", customers[4].id, dvo.id, "DELIVERED", false, [{ sku: "CT-FLAKE-OIL-155", qty: 20, unitPrice: 1824.00 }]);
-  await upsertOrder("SO-2026-0412", customers[7].id, mnl.id, "DELIVERED", false, [{ sku: "CHM-BAR-380",     qty: 15, unitPrice: 672.00 }]);
+  // Each item is priced in its own trading unit: cement by the bag, rebar by the length,
+  // aggregates by the cubic metre, and truck sizes by the load.
+  await upsertOrder("SO-2026-0418", customers[0].id, mnl.id, "PENDING",   false, [{ sku: "CEM-PORT-40",  qty: 120, unitPrice: 265.00 }, { sku: "RSB-12-6M",  qty: 80, unitPrice: 265.00 }]);
+  await upsertOrder("SO-2026-0417", customers[1].id, mnl.id, "APPROVED",  false, [{ sku: "CHB-6",        qty: 800, unitPrice: 26.00 },  { sku: "CEM-MASON-40", qty: 60, unitPrice: 240.00 }]);
+  // Three mini-trucks of sand: one line of qty 3 drawing 7.5 m³ from the pile.
+  await upsertOrder("SO-2026-0416", customers[2].id, ceb.id, "PREPARING", false, [{ sku: "MT-SAND",      qty: 3,   unitPrice: 3930.00 }]);
+  await upsertOrder("SO-2026-0415", customers[3].id, mnl.id, "SHIPPED",   false, [{ sku: "PLY-MARINE-12", qty: 24, unitPrice: 890.00 }, { sku: "LUM-COCO-2X3", qty: 40, unitPrice: 165.00 }]);
+  // Bulk aggregate bought by volume rather than by the truck.
+  await upsertOrder("SO-2026-0413", customers[4].id, dvo.id, "DELIVERED", false, [{ sku: "AGG-CRUSH-34", qty: 12,  unitPrice: 1550.00 }]);
+  await upsertOrder("SO-2026-0412", customers[7].id, mnl.id, "DELIVERED", false, [{ sku: "CEM-PORT-40",  qty: 200, unitPrice: 265.00 }]);
 
   // ── Accounting seed ───────────────────────────────────────────────────────
   // Journal entries
   const jeData = [
     // ── AR: base orders (case-priced) ──────────────────────────────────────
-    { id: "JE-2026-05-0418", date: hoursAgo(1),   source: "AR" as JeSource, ref: "INV-2026-0418", memo: "Sale to Puregold Urdaneta",                    lines: [{ code: "1100", dr: 19272.96, cr: 0 }, { code: "4000", dr: 0, cr: 17208.00 }, { code: "2100", dr: 0, cr: 2064.96 }] },
-    { id: "JE-2026-05-0417", date: hoursAgo(3),   source: "AR" as JeSource, ref: "INV-2026-0417", memo: "Sale to SM Savemore Dagupan",                   lines: [{ code: "1100", dr: 22444.80, cr: 0 }, { code: "4000", dr: 0, cr: 20040.00 }, { code: "2100", dr: 0, cr: 2404.80 }] },
-    { id: "JE-2026-05-0416a", date: daysAgo(6),   source: "AR" as JeSource, ref: "INV-2026-0416", memo: "Sale to Alfamart Urdaneta",                     lines: [{ code: "1100", dr: 10967.04, cr: 0 }, { code: "4000", dr: 0, cr: 9792.00 },  { code: "2100", dr: 0, cr: 1175.04 }] },
-    { id: "JE-2026-05-0416b", date: daysAgo(1),   source: "BANK" as JeSource, ref: "INV-2026-0416", memo: "Partial payment received — Alfamart Urdaneta", lines: [{ code: "1010", dr: 5000.00,  cr: 0 }, { code: "1100", dr: 0, cr: 5000.00 }] },
-    { id: "JE-2026-05-0413a", date: daysAgo(9),   source: "AR" as JeSource, ref: "INV-2026-0413", memo: "Sale to Villaflor General Merchandise — delivered", lines: [{ code: "1100", dr: 40857.60, cr: 0 }, { code: "4000", dr: 0, cr: 36480.00 }, { code: "2100", dr: 0, cr: 4377.60 }, { code: "5000", dr: 25536.00, cr: 0 }, { code: "1220", dr: 0, cr: 25536.00 }] },
-    { id: "JE-2026-05-0413b", date: daysAgo(2),   source: "BANK" as JeSource, ref: "INV-2026-0413", memo: "Payment received — Villaflor General Merchandise", lines: [{ code: "1010", dr: 40857.60, cr: 0 }, { code: "1100", dr: 0, cr: 40857.60 }] },
-    { id: "JE-2026-05-0412", date: daysAgo(4),    source: "AR" as JeSource, ref: "INV-2026-0412", memo: "Sale to CSI Supermarket — delivered",           lines: [{ code: "1100", dr: 11289.60, cr: 0 }, { code: "4000", dr: 0, cr: 10080.00 }, { code: "2100", dr: 0, cr: 1209.60 }, { code: "5000", dr: 7056.00, cr: 0 }, { code: "1200", dr: 0, cr: 7056.00 }] },
+    { id: "JE-2026-05-0418", date: hoursAgo(1),   source: "AR" as JeSource, ref: "INV-2026-0418", memo: "Sale to Bautista Construction",                    lines: [{ code: "1100", dr: 19272.96, cr: 0 }, { code: "4000", dr: 0, cr: 17208.00 }, { code: "2100", dr: 0, cr: 2064.96 }] },
+    { id: "JE-2026-05-0417", date: hoursAgo(3),   source: "AR" as JeSource, ref: "INV-2026-0417", memo: "Sale to Pangasinan Builders Supply",                   lines: [{ code: "1100", dr: 22444.80, cr: 0 }, { code: "4000", dr: 0, cr: 20040.00 }, { code: "2100", dr: 0, cr: 2404.80 }] },
+    { id: "JE-2026-05-0416a", date: daysAgo(6),   source: "AR" as JeSource, ref: "INV-2026-0416", memo: "Sale to Sison Hardware",                     lines: [{ code: "1100", dr: 10967.04, cr: 0 }, { code: "4000", dr: 0, cr: 9792.00 },  { code: "2100", dr: 0, cr: 1175.04 }] },
+    { id: "JE-2026-05-0416b", date: daysAgo(1),   source: "BANK" as JeSource, ref: "INV-2026-0416", memo: "Partial payment received — Sison Hardware", lines: [{ code: "1010", dr: 5000.00,  cr: 0 }, { code: "1100", dr: 0, cr: 5000.00 }] },
+    { id: "JE-2026-05-0413a", date: daysAgo(9),   source: "AR" as JeSource, ref: "INV-2026-0413", memo: "Sale to Villaflor Aggregates Trading — delivered", lines: [{ code: "1100", dr: 40857.60, cr: 0 }, { code: "4000", dr: 0, cr: 36480.00 }, { code: "2100", dr: 0, cr: 4377.60 }, { code: "5000", dr: 25536.00, cr: 0 }, { code: "1220", dr: 0, cr: 25536.00 }] },
+    { id: "JE-2026-05-0413b", date: daysAgo(2),   source: "BANK" as JeSource, ref: "INV-2026-0413", memo: "Payment received — Villaflor Aggregates Trading", lines: [{ code: "1010", dr: 40857.60, cr: 0 }, { code: "1100", dr: 0, cr: 40857.60 }] },
+    { id: "JE-2026-05-0412", date: daysAgo(4),    source: "AR" as JeSource, ref: "INV-2026-0412", memo: "Sale to CSI Infrastructure Builders — delivered",           lines: [{ code: "1100", dr: 11289.60, cr: 0 }, { code: "4000", dr: 0, cr: 10080.00 }, { code: "2100", dr: 0, cr: 1209.60 }, { code: "5000", dr: 7056.00, cr: 0 }, { code: "1200", dr: 0, cr: 7056.00 }] },
     // ── AR: due-for-payment showcase ────────────────────────────────────────
-    { id: "JE-2026-05-DUE01", date: daysAgo(28),  source: "AR" as JeSource, ref: "INV-DUE-01",   memo: "Sale to Fely's Mini Mart",                      lines: [{ code: "1100", dr: 15000.00, cr: 0 }, { code: "4000", dr: 0, cr: 13392.86 }, { code: "2100", dr: 0, cr: 1607.14 }] },
-    { id: "JE-2026-05-DUE02", date: daysAgo(29),  source: "AR" as JeSource, ref: "INV-DUE-02",   memo: "Sale to Dela Cruz Sari-Sari Store",             lines: [{ code: "1100", dr: 8500.00,  cr: 0 }, { code: "4000", dr: 0, cr: 7589.29 },  { code: "2100", dr: 0, cr: 910.71 }] },
-    // ── AR: Puregold Urdaneta's 2nd unpaid invoice ──────────────────────────
-    { id: "JE-2026-05-PGU02", date: daysAgo(10),  source: "AR" as JeSource, ref: "INV-PGU-02",   memo: "Sale to Puregold Urdaneta",                     lines: [{ code: "1100", dr: 22000.00, cr: 0 }, { code: "4000", dr: 0, cr: 19642.86 }, { code: "2100", dr: 0, cr: 2357.14 }] },
-    // ── AR: CSI Supermarket's 2nd invoice — paid in the field, pending remittance ──
-    { id: "JE-2026-05-CSI02", date: daysAgo(5),   source: "AR" as JeSource, ref: "INV-CSI-02",   memo: "Sale to CSI Supermarket",                       lines: [{ code: "1100", dr: 9450.00,  cr: 0 }, { code: "4000", dr: 0, cr: 8437.50 },  { code: "2100", dr: 0, cr: 1012.50 }] },
+    { id: "JE-2026-05-DUE01", date: daysAgo(28),  source: "AR" as JeSource, ref: "INV-DUE-01",   memo: "Sale to Reyes Engineering Works",                      lines: [{ code: "1100", dr: 15000.00, cr: 0 }, { code: "4000", dr: 0, cr: 13392.86 }, { code: "2100", dr: 0, cr: 1607.14 }] },
+    { id: "JE-2026-05-DUE02", date: daysAgo(29),  source: "AR" as JeSource, ref: "INV-DUE-02",   memo: "Sale to Dela Cruz Homebuilders",             lines: [{ code: "1100", dr: 8500.00,  cr: 0 }, { code: "4000", dr: 0, cr: 7589.29 },  { code: "2100", dr: 0, cr: 910.71 }] },
+    // ── AR: Bautista Construction's 2nd unpaid invoice ──────────────────────────
+    { id: "JE-2026-05-PGU02", date: daysAgo(10),  source: "AR" as JeSource, ref: "INV-BCD-02",   memo: "Sale to Bautista Construction",                     lines: [{ code: "1100", dr: 22000.00, cr: 0 }, { code: "4000", dr: 0, cr: 19642.86 }, { code: "2100", dr: 0, cr: 2357.14 }] },
+    // ── AR: CSI Infrastructure Builders's 2nd invoice — paid in the field, pending remittance ──
+    { id: "JE-2026-05-CSI02", date: daysAgo(5),   source: "AR" as JeSource, ref: "INV-CSI-02",   memo: "Sale to CSI Infrastructure Builders",                       lines: [{ code: "1100", dr: 9450.00,  cr: 0 }, { code: "4000", dr: 0, cr: 8437.50 },  { code: "2100", dr: 0, cr: 1012.50 }] },
     // ── Unrelated to the order/case-pricing refresh — left as-is ────────────
-    { id: "JE-2026-04-0416", date: hoursAgo(8),   source: "AP" as JeSource, ref: "PO-2026-0294",  memo: "PO receipt — Monde Nissin Corporation",         lines: [{ code: "1500", dr: 750000, cr: 0 }, { code: "2110", dr: 90000, cr: 0 }, { code: "2000", dr: 0, cr: 825000 }, { code: "2150", dr: 0, cr: 15000 }] },
+    { id: "JE-2026-04-0416", date: hoursAgo(8),   source: "AP" as JeSource, ref: "PO-2026-0294",  memo: "PO receipt — Northern Cement Corporation",         lines: [{ code: "1500", dr: 750000, cr: 0 }, { code: "2110", dr: 90000, cr: 0 }, { code: "2000", dr: 0, cr: 825000 }, { code: "2150", dr: 0, cr: 15000 }] },
     { id: "JE-2026-04-0414", date: hoursAgo(26),  source: "INV" as JeSource, ref: "TR-0034",      memo: "Inter-warehouse transfer MNL→CEB",              lines: [{ code: "1210", dr: 73000, cr: 0 }, { code: "1200", dr: 0, cr: 73000 }] },
     { id: "JE-2026-04-0412", date: hoursAgo(38),  source: "PAYROLL" as JeSource, ref: "PAY-2026-04-30", memo: "Bi-monthly payroll · 60 employees",     lines: [{ code: "5100", dr: 1820000, cr: 0 }, { code: "1020", dr: 0, cr: 1488800 }, { code: "2160", dr: 0, cr: 196000 }, { code: "2200", dr: 0, cr: 78400 }, { code: "2210", dr: 0, cr: 32200 }, { code: "2220", dr: 0, cr: 24600 }] },
     { id: "JE-2026-04-0411", date: hoursAgo(48),  source: "AP" as JeSource, ref: "BILL-MERALCO-04", memo: "Meralco — April electricity",                lines: [{ code: "5300", dr: 187500, cr: 0 }, { code: "2110", dr: 22500, cr: 0 }, { code: "2000", dr: 0, cr: 210000 }] },
     { id: "JE-2026-04-0410", date: hoursAgo(56),  source: "AP" as JeSource, ref: "BILL-MAYNILAD-04", memo: "Maynilad water — April",                   lines: [{ code: "5300", dr: 38400, cr: 0 }, { code: "2110", dr: 4608, cr: 0 }, { code: "2000", dr: 0, cr: 43008 }] },
-    { id: "JE-2026-04-0408", date: hoursAgo(96),  source: "AP" as JeSource, ref: "PO-2026-0297",  memo: "PO receipt — Century Pacific Food",            lines: [{ code: "1210", dr: 171428, cr: 0 }, { code: "2110", dr: 20571, cr: 0 }, { code: "2000", dr: 0, cr: 192000 }] },
+    { id: "JE-2026-04-0408", date: hoursAgo(96),  source: "AP" as JeSource, ref: "PO-2026-0297",  memo: "PO receipt — Pag-asa Steel Works",            lines: [{ code: "1210", dr: 171428, cr: 0 }, { code: "2110", dr: 20571, cr: 0 }, { code: "2000", dr: 0, cr: 192000 }] },
     { id: "JE-2026-04-0407", date: daysAgo(5),    source: "GL" as JeSource, ref: "DEPR-2026-04",  memo: "Monthly depreciation — delivery trucks & warehouse equipment", lines: [{ code: "5500", dr: 142000, cr: 0 }, { code: "1510", dr: 0, cr: 142000 }] },
     { id: "JE-2026-04-0405", date: daysAgo(12),   source: "GL" as JeSource, ref: "ADJ-RENT-04",   memo: "Reclass prepaid rent April",                    lines: [{ code: "5200", dr: 240000, cr: 0 }, { code: "1300", dr: 0, cr: 240000 }] },
   ];
@@ -261,15 +383,15 @@ async function main() {
     { id: "INV-2026-0417", custCode: "C-2002", soId: "SO-2026-0417", issued: hoursAgo(3),  due: daysFromNow(30), amount: 22444.80, paid: 0,        status: "OPEN"    as InvoiceStatus },
     { id: "INV-2026-0416", custCode: "C-2003", soId: "SO-2026-0416", issued: daysAgo(6),   due: daysFromNow(24), amount: 10967.04, paid: 5000,     status: "PARTIAL" as InvoiceStatus },
     { id: "INV-2026-0413", custCode: "C-2005", soId: "SO-2026-0413", issued: daysAgo(9),   due: daysFromNow(21), amount: 40857.60, paid: 40857.60, status: "PAID"    as InvoiceStatus },
-    // CSI Supermarket — 2 paid invoices ready for collection (collected in the field,
+    // CSI Infrastructure Builders — 2 paid invoices ready for collection (collected in the field,
     // pending remittance to Finance — see Collection seeding below)
     { id: "INV-2026-0412", custCode: "C-2008", soId: "SO-2026-0412", issued: daysAgo(4),   due: daysFromNow(26), amount: 11289.60, paid: 11289.60, status: "PAID"    as InvoiceStatus },
     { id: "INV-CSI-02",    custCode: "C-2008", soId: null,           issued: daysAgo(5),   due: daysFromNow(25), amount: 9450.00,  paid: 9450.00,  status: "PAID"    as InvoiceStatus },
     // Due for payment
     { id: "INV-DUE-01",    custCode: "C-2004", soId: null,           issued: daysAgo(28),  due: daysFromNow(2),  amount: 15000.00, paid: 0,        status: "OPEN"    as InvoiceStatus },
     { id: "INV-DUE-02",    custCode: "C-2006", soId: null,           issued: daysAgo(29),  due: daysFromNow(1),  amount: 8500.00,  paid: 0,        status: "OPEN"    as InvoiceStatus },
-    // Puregold Urdaneta — 2 pending unpaid invoices (this one + INV-2026-0418 above)
-    { id: "INV-PGU-02",    custCode: "C-2001", soId: null,           issued: daysAgo(10),  due: daysFromNow(20), amount: 22000.00, paid: 0,        status: "OPEN"    as InvoiceStatus },
+    // Bautista Construction — 2 pending unpaid invoices (this one + INV-2026-0418 above)
+    { id: "INV-BCD-02",    custCode: "C-2001", soId: null,           issued: daysAgo(10),  due: daysFromNow(20), amount: 22000.00, paid: 0,        status: "OPEN"    as InvoiceStatus },
   ];
 
   for (const inv of invData) {
@@ -287,7 +409,7 @@ async function main() {
     });
   }
 
-  // Field collections — CSI Supermarket's 2 invoices above are fully paid by the
+  // Field collections — CSI Infrastructure Builders's 2 invoices above are fully paid by the
   // customer but the cash is still with the field agent, awaiting remittance to
   // Finance (Collection.status stays PENDING until recordRemittance is called).
   const collectionData = [
