@@ -6,9 +6,19 @@ import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { getActiveQuota } from "@/lib/quota";
 import { getCustomerCredit } from "@/lib/credit";
+import { canApprove } from "@/lib/wholesale";
+import { assertWholesaleMinimumsStillMet } from "../orders/actions";
+import type { OrderChannel } from "@prisma/client";
 
 function requireApprover(role: string) {
   if (!["FINANCE", "ADMIN"].includes(role)) throw new Error("Forbidden");
+}
+
+// Wholesale narrows the approver set to ADMIN only; retail keeps FINANCE or ADMIN.
+function requireChannelApprover(channel: OrderChannel, role: string) {
+  if (!canApprove(channel, role)) {
+    throw new Error("Wholesale orders can only be approved by an Admin.");
+  }
 }
 
 export async function approveOrder(
@@ -22,6 +32,12 @@ export async function approveOrder(
 
   const order = await prisma.order.findUniqueOrThrow({ where: { id: orderId } });
   if (order.state !== "PENDING") throw new Error("Order is not pending");
+
+  // ── Wholesale gate: ADMIN only, and minimums must still hold ─────────────────
+  // Re-validated here rather than trusted from creation, because order lines can be
+  // edited on the order view after submission.
+  requireChannelApprover(order.channel, session.user.role);
+  await assertWholesaleMinimumsStillMet(orderId);
 
   // ── Credit hold check (3+ unpaid receipts) ────────────────────────────────────
   const credit = await getCustomerCredit(order.customerId);

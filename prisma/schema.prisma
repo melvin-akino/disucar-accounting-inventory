@@ -175,7 +175,15 @@ model CatalogItem {
   // Retail pieces contained in one `unit` (e.g. 48 cans per case). Informational only —
   // no conversion is applied, since buying and selling both happen in whole cases.
   unitsPerCase Int?
+  // Retail selling price. Cost is never stored here — it varies per delivery and lives
+  // on the Lot (see Phase 1 FIFO costing).
   unitPrice  Decimal      @db.Decimal(12, 2)
+  // Wholesale selling price, one per SKU. Null means this item is not sold wholesale
+  // and a wholesale order cannot include it.
+  wholesalePrice Decimal? @db.Decimal(12, 2)
+  // Minimum quantity of this SKU per line on a wholesale order. Null falls back to
+  // OrgSettings.wholesaleDefaultMinQty.
+  wholesaleMinQty Int?
   brand      String?
   imageUrl   String?
   active     Boolean      @default(true)
@@ -227,6 +235,14 @@ model Warehouse {
 
 // ─── Sales Orders ─────────────────────────────────────────────────────────────
 
+// Sales channel for an order. RETAIL is the pre-existing behaviour and stays the
+// default; WHOLESALE prices from CatalogItem.wholesalePrice, enforces minimum
+// quantities, and can only be approved by an ADMIN.
+enum OrderChannel {
+  RETAIL
+  WHOLESALE
+}
+
 enum OrderState {
   PENDING
   APPROVED
@@ -242,6 +258,7 @@ model Order {
   agentId     String?
   warehouseId String
   state       OrderState  @default(PENDING)
+  channel     OrderChannel @default(RETAIL)
   poRef       String?
   needBy      DateTime?
   cwt2307     Boolean     @default(false)
@@ -931,6 +948,10 @@ model OrgSettings {
   logoUrl            String?
   expiryWarnDays     Int     @default(90)
   expiryCriticalDays Int     @default(30)
+  // Wholesale thresholds. Per-SKU CatalogItem.wholesaleMinQty overrides the qty default;
+  // the order floor applies to the whole order regardless of SKU mix.
+  wholesaleDefaultMinQty Int     @default(1)
+  wholesaleMinOrderTotal Decimal @default(0) @db.Decimal(14, 2)
   allowedOfficeIps   String  @default("")
 
   @@map("org_settings")

@@ -66,6 +66,7 @@ export function NewOrderForm({ customers, catalog, warehouses, fixedCustomerId, 
   const [cwt2307, setCwt2307] = useState(false);
   const [notes, setNotes] = useState("");
   const [msrCode, setMsrCode] = useState("");
+  const [channel, setChannel] = useState<"RETAIL" | "WHOLESALE">("RETAIL");
   const [lines, setLines] = useState<Line[]>([{ skuId: "", qty: 1, unitPrice: 0 }]);
   const [freeLines, setFreeLines] = useState<FreeLine[]>([]);
   const [credit, setCredit] = useState<CreditStatus | null>(null);
@@ -80,18 +81,52 @@ export function NewOrderForm({ customers, catalog, warehouses, fixedCustomerId, 
   function addLine() { setLines(l => [...l, { skuId: "", qty: 1, unitPrice: 0 }]); }
   function removeLine(i: number) { setLines(l => l.filter((_, idx) => idx !== i)); }
 
+  // Price for the active channel. The server re-resolves wholesale prices from the
+  // catalog regardless — this only keeps the form's running total honest.
+  function priceFor(item: CatalogItem | undefined) {
+    if (!item) return 0;
+    if (channel === "WHOLESALE") {
+      return item.wholesalePrice === null ? 0 : Number(item.wholesalePrice);
+    }
+    return Number(item.unitPrice);
+  }
+
   function updateLine(i: number, field: keyof Line, value: string | number) {
     setLines(prev => {
       const next = [...prev];
       if (field === "skuId") {
-        const item = catalog.find(c => c.id === value);
-        next[i] = { ...next[i], skuId: value as string, unitPrice: item ? Number(item.unitPrice) : 0 };
+        next[i] = { ...next[i], skuId: value as string, unitPrice: priceFor(catalog.find(c => c.id === value)) };
       } else {
         next[i] = { ...next[i], [field]: Number(value) };
       }
       return next;
     });
   }
+
+  // Switching channel reprices every line that already has a product selected.
+  function switchChannel(next: "RETAIL" | "WHOLESALE") {
+    setChannel(next);
+    setLines(prev =>
+      prev.map(l => {
+        if (!l.skuId) return l;
+        const item = catalog.find(c => c.id === l.skuId);
+        if (!item) return l;
+        const price = next === "WHOLESALE"
+          ? (item.wholesalePrice === null ? 0 : Number(item.wholesalePrice))
+          : Number(item.unitPrice);
+        return { ...l, unitPrice: price };
+      })
+    );
+  }
+
+  // Items with no wholesale price cannot be sold on that channel — surfaced before
+  // submission rather than as a server error.
+  const unavailableWholesale = channel === "WHOLESALE"
+    ? lines
+        .filter(l => l.skuId)
+        .map(l => catalog.find(c => c.id === l.skuId))
+        .filter((c): c is CatalogItem => !!c && c.wholesalePrice === null)
+    : [];
 
   function addFreeLine() { setFreeLines(l => [...l, { skuId: "", qty: 1 }]); }
   function removeFreeLine(i: number) { setFreeLines(l => l.filter((_, idx) => idx !== i)); }
@@ -119,7 +154,7 @@ export function NewOrderForm({ customers, catalog, warehouses, fixedCustomerId, 
     startTransition(async () => {
       try {
         const id = await createOrder({
-          customerId, warehouseId, cwt2307, notes, msrCode,
+          customerId, warehouseId, cwt2307, notes, msrCode, channel,
           lines: [
             ...lines.map(l => ({ skuId: l.skuId, qty: l.qty, unitPrice: l.unitPrice, isFree: false })),
             ...freeLines.map(l => ({ skuId: l.skuId, qty: l.qty, unitPrice: 0, isFree: true })),
@@ -173,6 +208,32 @@ export function NewOrderForm({ customers, catalog, warehouses, fixedCustomerId, 
           <div className="col-span-2">
             <label className="field-label">Notes</label>
             <textarea className="field-input" rows={2} value={notes} onChange={e => setNotes(e.target.value)} placeholder="Special instructions or delivery notes…" />
+          </div>
+          <div className="col-span-2">
+            <label className="field-label">Sales Channel</label>
+            <div style={{ display: "flex", gap: 8 }}>
+              {(["RETAIL", "WHOLESALE"] as const).map(c => (
+                <button
+                  key={c}
+                  type="button"
+                  className={`btn btn-sm${channel === c ? " btn-primary" : ""}`}
+                  onClick={() => switchChannel(c)}
+                >
+                  {c === "RETAIL" ? "Retail" : "Wholesale"}
+                </button>
+              ))}
+            </div>
+            {channel === "WHOLESALE" && (
+              <p style={{ fontSize: 11.5, color: "oklch(var(--ink-3))", marginTop: 6 }}>
+                Wholesale pricing applies. Minimum quantities are enforced, and the order
+                requires Admin approval before it is confirmed.
+              </p>
+            )}
+            {unavailableWholesale.length > 0 && (
+              <p style={{ fontSize: 11.5, color: "oklch(var(--err))", marginTop: 6 }}>
+                Not available for wholesale: {unavailableWholesale.map(c => c.name).join(", ")}
+              </p>
+            )}
           </div>
           <div className="col-span-2 flex items-center gap-2">
             <input type="checkbox" id="cwt" checked={cwt2307} onChange={e => setCwt2307(e.target.checked)} className="w-3.5 h-3.5" />

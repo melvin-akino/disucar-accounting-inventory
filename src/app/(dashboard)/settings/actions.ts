@@ -200,6 +200,29 @@ export async function saveExpiryThresholds(warnDays: number, criticalDays: numbe
   revalidatePath("/dashboard");
 }
 
+// ── Wholesale thresholds ──────────────────────────────────────────────────────
+// Fallback minimum quantity per line (when a SKU sets none) and the floor for the
+// whole order. Enforced in orders/actions.ts at creation and again at approval.
+export async function saveWholesaleThresholds(defaultMinQty: number, minOrderTotal: number) {
+  await requireAdmin();
+  if (!Number.isInteger(defaultMinQty) || defaultMinQty < 1) {
+    throw new Error("Default minimum quantity must be a whole number of at least 1");
+  }
+  if (minOrderTotal < 0) throw new Error("Minimum order total cannot be negative");
+
+  await prisma.orgSettings.upsert({
+    where: { id: "singleton" },
+    update: { wholesaleDefaultMinQty: defaultMinQty, wholesaleMinOrderTotal: minOrderTotal },
+    create: {
+      id: "singleton", wholesaleDefaultMinQty: defaultMinQty, wholesaleMinOrderTotal: minOrderTotal,
+      name: "", tagline: "", address: "", phone: "", email: "", tin: "", website: "", color: "#003087", rdo: "", zip: "",
+    },
+  });
+
+  revalidatePath("/orders");
+  revalidatePath("/settings");
+}
+
 // ── Home-base login restriction ─────────────────────────────────────────────
 export async function saveAccessSettings(allowedOfficeIps: string) {
   const session = await requireAdmin();

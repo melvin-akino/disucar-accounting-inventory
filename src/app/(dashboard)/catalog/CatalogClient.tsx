@@ -34,6 +34,8 @@ export interface CatalogRow {
   unit: string;
   unitsPerCase: number | null;
   unitPrice: string;
+  wholesalePrice: string | null;
+  wholesaleMinQty: number | null;
   brand: string | null;
   imageUrl: string | null;
   active: boolean;
@@ -51,6 +53,8 @@ interface FormState {
   unit: string;
   unitsPerCase: string;
   unitPrice: string;
+  wholesalePrice: string;
+  wholesaleMinQty: string;
   brand: string;
   imageUrl: string;
   supplierId: string;
@@ -59,7 +63,7 @@ interface FormState {
 }
 
 function emptyForm(): FormState {
-  return { sku: "", name: "", category: "OTHER", unit: "case", unitsPerCase: "", unitPrice: "", brand: "", imageUrl: "", supplierId: "", parentId: "", active: true };
+  return { sku: "", name: "", category: "OTHER", unit: "case", unitsPerCase: "", unitPrice: "", wholesalePrice: "", wholesaleMinQty: "", brand: "", imageUrl: "", supplierId: "", parentId: "", active: true };
 }
 
 function rowToForm(r: CatalogRow): FormState {
@@ -70,6 +74,8 @@ function rowToForm(r: CatalogRow): FormState {
     unit: r.unit,
     unitsPerCase: r.unitsPerCase != null ? String(r.unitsPerCase) : "",
     unitPrice: r.unitPrice,
+    wholesalePrice: r.wholesalePrice ?? "",
+    wholesaleMinQty: r.wholesaleMinQty?.toString() ?? "",
     brand: r.brand ?? "",
     imageUrl: r.imageUrl ?? "",
     supplierId: r.supplierId ?? "",
@@ -159,6 +165,14 @@ function CatalogForm({
         </Field>
         <Field label="Brand">
           <input className="field-input" value={form.brand} onChange={set("brand")} placeholder="Optional" />
+        </Field>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Wholesale Price (₱)">
+          <input className="field-input" type="number" min="0.01" step="0.01" value={form.wholesalePrice} onChange={set("wholesalePrice")} placeholder="Leave blank — not sold wholesale" />
+        </Field>
+        <Field label="Wholesale Min. Qty per Line">
+          <input className="field-input" type="number" min="1" step="1" value={form.wholesaleMinQty} onChange={set("wholesaleMinQty")} placeholder="Blank — use org default" />
         </Field>
       </div>
       <Field label="Product Photo (shown on the public order page)">
@@ -254,6 +268,8 @@ export function CatalogClient({ items, suppliers, categories }: { items: Catalog
           unit: createForm.unit,
           unitsPerCase: createForm.unitsPerCase ? parseInt(createForm.unitsPerCase, 10) : null,
           unitPrice: parseFloat(createForm.unitPrice),
+          wholesalePrice: createForm.wholesalePrice ? parseFloat(createForm.wholesalePrice) : null,
+          wholesaleMinQty: createForm.wholesaleMinQty ? parseInt(createForm.wholesaleMinQty, 10) : null,
           brand: createForm.brand || undefined,
           imageUrl: createForm.imageUrl || null,
           supplierId: createForm.supplierId || null,
@@ -276,6 +292,8 @@ export function CatalogClient({ items, suppliers, categories }: { items: Catalog
           unit: editForm.unit,
           unitsPerCase: editForm.unitsPerCase ? parseInt(editForm.unitsPerCase, 10) : null,
           unitPrice: parseFloat(editForm.unitPrice),
+          wholesalePrice: editForm.wholesalePrice ? parseFloat(editForm.wholesalePrice) : null,
+          wholesaleMinQty: editForm.wholesaleMinQty ? parseInt(editForm.wholesaleMinQty, 10) : null,
           brand: editForm.brand || undefined,
           imageUrl: editForm.imageUrl || null,
           supplierId: editForm.supplierId || null,

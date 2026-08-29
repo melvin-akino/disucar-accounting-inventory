@@ -29,6 +29,8 @@ export default async function CatalogPage() {
     unit: i.unit,
     unitsPerCase: i.unitsPerCase,
     unitPrice: i.unitPrice.toString(),
+    wholesalePrice: i.wholesalePrice ? i.wholesalePrice.toString() : null,
+    wholesaleMinQty: i.wholesaleMinQty,
     brand: i.brand,
     imageUrl: i.imageUrl,
     active: i.active,

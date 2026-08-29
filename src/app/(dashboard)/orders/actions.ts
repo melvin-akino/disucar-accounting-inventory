@@ -13,6 +13,7 @@ import { sendOrderEmail } from "@/lib/email";
 import { nextCode } from "@/lib/ids";
 import { selectLotsFifo, totalAllocationCost, type CostedLotAllocation } from "@/lib/order-logic";
 import { inventoryAccountFor, COGS_ACCOUNT } from "@/lib/coa";
+import { resolveUnitPrice, checkWholesaleMinimums, formatViolations, canApprove } from "@/lib/wholesale";
 
 export { getCustomerCredit };
 
@@ -168,6 +169,55 @@ async function consumeStock(
   });
 }
 
+/**
+ * Re-check wholesale minimums against the order's current lines.
+ *
+ * Creation-time validation is not sufficient on its own: lines can be edited on the
+ * order view after submission, so an order that passed at creation can be under the
+ * minimum by the time someone approves it. No-ops for retail orders.
+ */
+export async function assertWholesaleMinimumsStillMet(orderId: string): Promise<void> {
+  const order = await prisma.order.findUniqueOrThrow({
+    where: { id: orderId },
+    include: { lines: { select: { skuId: true, qty: true } } },
+  });
+  if (order.channel !== "WHOLESALE") return;
+
+  const [items, settings] = await Promise.all([
+    prisma.catalogItem.findMany({
+      where: { id: { in: order.lines.map((l) => l.skuId) } },
+      select: { id: true, name: true, unitPrice: true, wholesalePrice: true, wholesaleMinQty: true },
+    }),
+    prisma.orgSettings.findUnique({ where: { id: "singleton" } }),
+  ]);
+
+  const itemMap = new Map(
+    items.map((i) => [
+      i.id,
+      {
+        id: i.id,
+        name: i.name,
+        unitPrice: Number(i.unitPrice),
+        wholesalePrice: i.wholesalePrice === null ? null : Number(i.wholesalePrice),
+        wholesaleMinQty: i.wholesaleMinQty,
+      },
+    ])
+  );
+
+  const violations = checkWholesaleMinimums(
+    "WHOLESALE",
+    order.lines,
+    itemMap,
+    {
+      defaultMinQty: settings?.wholesaleDefaultMinQty ?? 1,
+      minOrderTotal: settings ? Number(settings.wholesaleMinOrderTotal) : 0,
+    },
+    Number(order.total)
+  );
+
+  if (violations.length > 0) throw new Error(formatViolations(violations));
+}
+
 // ── Advance order state FSM ───────────────────────────────────────────────────
 // Returns a result object rather than throwing for expected business-validation failures
 // (e.g. insufficient stock): Next.js redacts thrown Server Action error messages in
@@ -187,7 +237,14 @@ export async function advanceOrderState(
 
   // Stock side-effects before the state update
   if (transition.next === "APPROVED") {
+    // This is a second approval path alongside approveOrder() on the approvals screen.
+    // Wholesale is ADMIN-only, so the narrower gate has to be applied here too or the
+    // restriction would be trivially bypassed by advancing the order from its detail view.
+    if (!canApprove(order.channel, userRole)) {
+      return { ok: false, error: "Wholesale orders can only be approved by an Admin." };
+    }
     try {
+      await assertWholesaleMinimumsStillMet(orderId);
       await reserveStock(orderId, order.warehouseId);
     } catch (e) {
       return { ok: false, error: (e as Error).message };
@@ -393,6 +450,7 @@ const NewOrderSchema = z.object({
   notes: z.string().optional(),
   msrCode: z.string().optional(),
   discountMode: z.enum(["CUSTOMER", "PRODUCT"]).optional(),
+  channel: z.enum(["RETAIL", "WHOLESALE"]).default("RETAIL"),
   lines: z.array(
     z.object({
       skuId: z.string().min(1),
@@ -405,7 +463,9 @@ const NewOrderSchema = z.object({
   ).min(1),
 });
 
-export async function createOrder(input: z.infer<typeof NewOrderSchema>) {
+// z.input, not z.infer: defaulted fields (channel, cwt2307, isFree) are optional for
+// callers and filled in by parse(), which z.infer's output type would wrongly demand.
+export async function createOrder(input: z.input<typeof NewOrderSchema>) {
   const session = await getServerSession(authOptions);
   if (!session) throw new Error("Unauthenticated");
 
@@ -414,8 +474,55 @@ export async function createOrder(input: z.infer<typeof NewOrderSchema>) {
   // trusting the client (the auto-fill math already happened client-side, but the mode
   // flag itself must not be recorded as if an Admin selected it).
   const discountMode = session.user.role === "ADMIN" ? data.discountMode : undefined;
-  const subtotal = data.lines.reduce((s, l) => s + l.qty * l.unitPrice, 0);
+
+  // Wholesale prices from the catalog, never from the client. The submitted unitPrice is
+  // only honoured for retail (where discounts and free goods are applied on the form).
+  const channel = data.channel;
+  const pricedItems = await prisma.catalogItem.findMany({
+    where: { id: { in: data.lines.map((l) => l.skuId) } },
+    select: { id: true, name: true, unitPrice: true, wholesalePrice: true, wholesaleMinQty: true },
+  });
+  const pricedMap = new Map(
+    pricedItems.map((i) => [
+      i.id,
+      {
+        id: i.id,
+        name: i.name,
+        unitPrice: Number(i.unitPrice),
+        wholesalePrice: i.wholesalePrice === null ? null : Number(i.wholesalePrice),
+        wholesaleMinQty: i.wholesaleMinQty,
+      },
+    ])
+  );
+
+  const linesWithPrice = data.lines.map((l) => {
+    const item = pricedMap.get(l.skuId);
+    if (channel === "WHOLESALE") {
+      if (!item) throw new Error(`Unknown item ${l.skuId}.`);
+      // Free goods stay free on either channel.
+      return { ...l, unitPrice: l.isFree ? 0 : resolveUnitPrice(item, "WHOLESALE") };
+    }
+    return l;
+  });
+
+  const subtotal = linesWithPrice.reduce((s, l) => s + l.qty * l.unitPrice, 0);
   const { vat, cwt, total } = orderTotal(subtotal, data.cwt2307);
+
+  // Minimums are enforced here and again at approval — lines can be edited in between.
+  if (channel === "WHOLESALE") {
+    const settings = await prisma.orgSettings.findUnique({ where: { id: "singleton" } });
+    const violations = checkWholesaleMinimums(
+      "WHOLESALE",
+      linesWithPrice,
+      pricedMap,
+      {
+        defaultMinQty: settings?.wholesaleDefaultMinQty ?? 1,
+        minOrderTotal: settings ? Number(settings.wholesaleMinOrderTotal) : 0,
+      },
+      total
+    );
+    if (violations.length > 0) throw new Error(formatViolations(violations));
+  }
 
   // Credit hold (3+ unpaid receipts) is informational only at creation time — it does not
   // block submission. It hard-blocks at approval instead (see approvals/actions.ts), where a
@@ -435,6 +542,7 @@ export async function createOrder(input: z.infer<typeof NewOrderSchema>) {
       customerId: data.customerId,
       agentId: session.user.id,
       warehouseId: data.warehouseId,
+      channel,
       subtotal,
       vat,
       cwt,
@@ -444,7 +552,7 @@ export async function createOrder(input: z.infer<typeof NewOrderSchema>) {
       msrCode: data.msrCode?.trim() || null,
       discountMode: discountMode ?? null,
       lines: {
-        create: data.lines.map((l) => ({
+        create: linesWithPrice.map((l) => ({
           skuId: l.skuId,
           name: itemMap[l.skuId]?.name ?? l.skuId,
           unit: itemMap[l.skuId]?.unit ?? "pc",
