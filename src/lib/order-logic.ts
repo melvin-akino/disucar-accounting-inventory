@@ -160,6 +160,92 @@ export function totalAllocationCost(allocations: CostedLotAllocation[]): number 
   return toCentavos(allocations.reduce((sum, a) => sum + a.costTotal, 0));
 }
 
+// ── Lot selection made at order entry ─────────────────────────────────────────
+
+export interface PlannedLot {
+  lotId: string;
+  qty: number;
+}
+
+/**
+ * Does this selection match what FIFO would have chosen?
+ *
+ * Sales sees the FIFO plan pre-selected, so anything else is a deliberate deviation
+ * that must be justified and audited. Compares the lot/quantity pairs rather than the
+ * array order — picking the same layers in a different sequence is not an override.
+ */
+export function isFifoPlan(plan: PlannedLot[], lots: CostedLotInput[], neededQty: number): boolean {
+  let expected: CostedLotAllocation[];
+  try {
+    expected = selectLotsFifo(lots, neededQty);
+  } catch {
+    // FIFO itself cannot be satisfied, so no plan can match it.
+    return false;
+  }
+
+  const planned = new Map(plan.filter((p) => p.qty > 0).map((p) => [p.lotId, p.qty]));
+  if (planned.size !== expected.length) return false;
+  return expected.every((e) => planned.get(e.lotId) === e.take);
+}
+
+export interface PlanValidationResult {
+  ok: boolean;
+  error?: string;
+}
+
+/**
+ * Check a lot selection is internally coherent before it is stored.
+ *
+ * Rejects quantities that do not add up, lots that do not belong to the line's SKU and
+ * warehouse, and draws beyond what a layer still holds. Availability is re-checked at
+ * fulfilment too — this catches mistakes early, it is not the final authority.
+ */
+export function validateLotPlan(
+  plan: PlannedLot[],
+  lots: CostedLotInput[],
+  neededQty: number
+): PlanValidationResult {
+  if (plan.length === 0) return { ok: true }; // no explicit selection — FIFO applies
+
+  const byId = new Map(lots.map((l) => [l.id, l]));
+  const seen = new Set<string>();
+  let total = 0;
+
+  for (const p of plan) {
+    if (p.qty <= 0) return { ok: false, error: "Lot quantities must be greater than zero." };
+    if (seen.has(p.lotId)) return { ok: false, error: "The same lot was selected more than once." };
+    seen.add(p.lotId);
+
+    const lot = byId.get(p.lotId);
+    if (!lot) return { ok: false, error: "A selected lot is not available at this warehouse." };
+    if (p.qty > lot.remainingQty) {
+      return { ok: false, error: `Lot only has ${lot.remainingQty} remaining, ${p.qty} requested.` };
+    }
+    total += p.qty;
+  }
+
+  if (total !== neededQty) {
+    return { ok: false, error: `Lot selection totals ${total} but the line is for ${neededQty}.` };
+  }
+
+  return { ok: true };
+}
+
+/** Cost a stored plan at each lot's current cost, for fulfilment. */
+export function costPlan(plan: PlannedLot[], lots: CostedLotInput[]): CostedLotAllocation[] {
+  const byId = new Map(lots.map((l) => [l.id, l]));
+  return plan.map((p) => {
+    const lot = byId.get(p.lotId);
+    if (!lot) throw new Error("Planned lot is no longer available.");
+    return {
+      lotId: p.lotId,
+      take: p.qty,
+      unitCost: lot.unitCost,
+      costTotal: toCentavos(p.qty * lot.unitCost),
+    };
+  });
+}
+
 /**
  * Select lots using First-Expiry-First-Out (FEFO).
  * Lots with no expiry are consumed last.

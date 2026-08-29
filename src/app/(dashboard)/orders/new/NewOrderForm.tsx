@@ -2,7 +2,7 @@
 
 import { useState, useTransition, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { createOrder, getCustomerCredit } from "../actions";
+import { createOrder, getCustomerCredit, getAvailableLots, type AvailableLot } from "../actions";
 import { useToast } from "@/components/ui/Toast";
 import { peso, orderTotal } from "@/lib/utils";
 import type { Customer, CatalogItem, Warehouse } from "@prisma/client";
@@ -17,7 +17,15 @@ interface Props {
   currentRole?: string;
 }
 
-interface Line { skuId: string; qty: number; unitPrice: number }
+interface Line {
+  skuId: string;
+  qty: number;
+  unitPrice: number;
+  // Per-lot quantities keyed by lot id. Empty until the picker is opened; an empty
+  // selection submits nothing and the server applies FIFO.
+  lotPlan: Record<string, number>;
+  lotOverrideReason: string;
+}
 interface FreeLine { skuId: string; qty: number }
 
 function CreditInfoBar({ credit }: { credit: CreditStatus }) {
@@ -56,6 +64,122 @@ function CreditInfoBar({ credit }: { credit: CreditStatus }) {
   );
 }
 
+/**
+ * Lot picker for one order line.
+ *
+ * Opens pre-filled with the FIFO selection — the default the business wants — and lets
+ * the salesperson redistribute across layers when there is a reason to (a nearer pallet,
+ * a customer who wants a specific delivery). Deviating requires a reason, which the
+ * server also insists on, so this is convenience rather than the enforcement point.
+ */
+function LotPicker({
+  skuId,
+  warehouseId,
+  qty,
+  plan,
+  reason,
+  onChange,
+  onReasonChange,
+}: {
+  skuId: string;
+  warehouseId: string;
+  qty: number;
+  plan: Record<string, number>;
+  reason: string;
+  onChange: (plan: Record<string, number>) => void;
+  onReasonChange: (reason: string) => void;
+}) {
+  const [lots, setLots] = useState<AvailableLot[] | null>(null);
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+
+  async function load() {
+    if (!skuId || !warehouseId || qty < 1) return;
+    setLoading(true);
+    try {
+      const rows = await getAvailableLots(skuId, warehouseId, qty);
+      setLots(rows);
+      // Seed with FIFO on first open so the default is visible, not implicit.
+      if (Object.keys(plan).length === 0) {
+        const fifo: Record<string, number> = {};
+        rows.forEach(r => { if (r.fifoQty > 0) fifo[r.id] = r.fifoQty; });
+        onChange(fifo);
+      }
+      setOpen(true);
+    } catch {
+      setLots([]);
+      setOpen(true);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const selected = Object.values(plan).reduce((s, n) => s + n, 0);
+  const isFifo = !lots || lots.every(r => (plan[r.id] ?? 0) === r.fifoQty);
+
+  if (!open) {
+    return (
+      <button type="button" className="btn btn-ghost btn-sm" onClick={load} disabled={!skuId || loading}>
+        {loading ? "Loading…" : "Lots: FIFO"}
+      </button>
+    );
+  }
+
+  return (
+    <div style={{ padding: "8px 10px", background: "oklch(var(--bg-2))", borderRadius: 6, border: "1px solid oklch(var(--line))" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+        <span style={{ fontSize: 11.5, fontWeight: 600 }}>
+          Lot selection {isFifo ? "· FIFO (default)" : "· manual override"}
+        </span>
+        <button type="button" className="btn btn-ghost btn-sm" onClick={() => setOpen(false)}>Close</button>
+      </div>
+
+      {lots && lots.length === 0 && (
+        <p style={{ fontSize: 11.5, color: "oklch(var(--ink-3))" }}>
+          No costed lots on hand for this item — FIFO will apply at delivery.
+        </p>
+      )}
+
+      {lots && lots.map(r => (
+        <div key={r.id} style={{ display: "grid", gridTemplateColumns: "1fr 90px 90px 70px", gap: 6, alignItems: "center", padding: "3px 0" }}>
+          <span style={{ fontSize: 11.5, fontFamily: "monospace" }}>{r.lotNumber}</span>
+          <span style={{ fontSize: 11, color: "oklch(var(--ink-3))" }}>
+            {new Date(r.receivedAt).toLocaleDateString("en-PH")}
+          </span>
+          <span style={{ fontSize: 11, color: "oklch(var(--ink-3))" }}>
+            {peso(r.unitCost)} · {r.remainingQty} left
+          </span>
+          <input
+            type="number" className="field-input" min={0} max={r.remainingQty} step={1}
+            style={{ textAlign: "right", padding: "2px 4px", fontSize: 11.5 }}
+            value={plan[r.id] ?? 0}
+            onChange={e => {
+              const v = parseInt(e.target.value, 10) || 0;
+              const next = { ...plan };
+              if (v > 0) next[r.id] = v; else delete next[r.id];
+              onChange(next);
+            }}
+          />
+        </div>
+      ))}
+
+      <div style={{ fontSize: 11.5, marginTop: 6, color: selected === qty ? "oklch(var(--ink-3))" : "oklch(var(--err))" }}>
+        Selected {selected} of {qty}
+      </div>
+
+      {!isFifo && (
+        <input
+          className="field-input"
+          style={{ marginTop: 6, fontSize: 11.5 }}
+          placeholder="Reason for not using FIFO (required)"
+          value={reason}
+          onChange={e => onReasonChange(e.target.value)}
+        />
+      )}
+    </div>
+  );
+}
+
 export function NewOrderForm({ customers, catalog, warehouses, fixedCustomerId, backHref = "/orders" }: Props) {
   const router = useRouter();
   const { toast } = useToast();
@@ -67,7 +191,7 @@ export function NewOrderForm({ customers, catalog, warehouses, fixedCustomerId, 
   const [notes, setNotes] = useState("");
   const [msrCode, setMsrCode] = useState("");
   const [channel, setChannel] = useState<"RETAIL" | "WHOLESALE">("RETAIL");
-  const [lines, setLines] = useState<Line[]>([{ skuId: "", qty: 1, unitPrice: 0 }]);
+  const [lines, setLines] = useState<Line[]>([{ skuId: "", qty: 1, unitPrice: 0, lotPlan: {}, lotOverrideReason: "" }]);
   const [freeLines, setFreeLines] = useState<FreeLine[]>([]);
   const [credit, setCredit] = useState<CreditStatus | null>(null);
 
@@ -78,7 +202,7 @@ export function NewOrderForm({ customers, catalog, warehouses, fixedCustomerId, 
     getCustomerCredit(customerId).then(setCredit).catch(() => {});
   }, [customerId]);
 
-  function addLine() { setLines(l => [...l, { skuId: "", qty: 1, unitPrice: 0 }]); }
+  function addLine() { setLines(l => [...l, { skuId: "", qty: 1, unitPrice: 0, lotPlan: {}, lotOverrideReason: "" }]); }
   function removeLine(i: number) { setLines(l => l.filter((_, idx) => idx !== i)); }
 
   // Price for the active channel. The server re-resolves wholesale prices from the
@@ -156,7 +280,17 @@ export function NewOrderForm({ customers, catalog, warehouses, fixedCustomerId, 
         const id = await createOrder({
           customerId, warehouseId, cwt2307, notes, msrCode, channel,
           lines: [
-            ...lines.map(l => ({ skuId: l.skuId, qty: l.qty, unitPrice: l.unitPrice, isFree: false })),
+            ...lines.map(l => ({
+              skuId: l.skuId,
+              qty: l.qty,
+              unitPrice: l.unitPrice,
+              isFree: false,
+              // Omitted entirely when untouched, so the server applies FIFO.
+              lotPlan: Object.entries(l.lotPlan)
+                .filter(([, q]) => q > 0)
+                .map(([lotId, qty]) => ({ lotId, qty })),
+              lotOverrideReason: l.lotOverrideReason || undefined,
+            })),
             ...freeLines.map(l => ({ skuId: l.skuId, qty: l.qty, unitPrice: 0, isFree: true })),
           ],
         });
@@ -268,6 +402,19 @@ export function NewOrderForm({ customers, catalog, warehouses, fixedCustomerId, 
                       <option value="">Select product…</option>
                       {catalog.map(c => <option key={c.id} value={c.id}>{c.name} ({c.sku})</option>)}
                     </select>
+                    {line.skuId && (
+                      <div style={{ marginTop: 5 }}>
+                        <LotPicker
+                          skuId={line.skuId}
+                          warehouseId={warehouseId}
+                          qty={line.qty}
+                          plan={line.lotPlan}
+                          reason={line.lotOverrideReason}
+                          onChange={p => setLines(prev => prev.map((r, j) => j === i ? { ...r, lotPlan: p } : r))}
+                          onReasonChange={v => setLines(prev => prev.map((r, j) => j === i ? { ...r, lotOverrideReason: v } : r))}
+                        />
+                      </div>
+                    )}
                   </td>
                   <td className="num">
                     <input type="number" min={1} className="field-input text-right" value={line.qty} onChange={e => updateLine(i, "qty", e.target.value)} required />

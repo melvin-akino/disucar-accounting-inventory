@@ -11,7 +11,15 @@ import { orderTotal } from "@/lib/utils";
 import { getCustomerCredit } from "@/lib/credit";
 import { sendOrderEmail } from "@/lib/email";
 import { nextCode } from "@/lib/ids";
-import { selectLotsFifo, totalAllocationCost, type CostedLotAllocation } from "@/lib/order-logic";
+import {
+  selectLotsFifo,
+  totalAllocationCost,
+  validateLotPlan,
+  isFifoPlan,
+  costPlan,
+  type CostedLotAllocation,
+} from "@/lib/order-logic";
+import { writeAudit } from "@/lib/audit";
 import { inventoryAccountFor, COGS_ACCOUNT } from "@/lib/coa";
 import { resolveUnitPrice, checkWholesaleMinimums, formatViolations, canApprove } from "@/lib/wholesale";
 
@@ -75,7 +83,7 @@ async function consumeStock(
   actorId: string
 ) {
   const [lines, warehouse] = await Promise.all([
-    prisma.orderLine.findMany({ where: { orderId } }),
+    prisma.orderLine.findMany({ where: { orderId }, include: { plannedLots: true } }),
     prisma.warehouse.findUniqueOrThrow({ where: { id: warehouseId }, select: { code: true } }),
   ]);
   const invAccount = inventoryAccountFor(warehouse.code);
@@ -87,15 +95,25 @@ async function consumeStock(
     const lots = await prisma.lot.findMany({
       where: { skuId: line.skuId, warehouseId, remainingQty: { gt: 0 }, status: "ACTIVE" },
     });
-    const allocations = selectLotsFifo(
-      lots.map((l) => ({
-        id: l.id,
-        remainingQty: l.remainingQty,
-        unitCost: Number(l.unitCost),
-        receivedAt: l.receivedAt,
-      })),
-      line.qty
-    );
+    const costed = lots.map((l) => ({
+      id: l.id,
+      remainingQty: l.remainingQty,
+      unitCost: Number(l.unitCost),
+      receivedAt: l.receivedAt,
+    }));
+
+    // Honour the selection made at order entry when it is still satisfiable. Stock
+    // moves between order entry and delivery — another order may have drained a layer,
+    // or a lot may have been quarantined — so an unsatisfiable plan degrades to FIFO
+    // rather than blocking the delivery.
+    const planned = line.plannedLots.map((p) => ({ lotId: p.lotId, qty: p.qtyPlanned }));
+    const plannedUsable =
+      planned.length > 0 && validateLotPlan(planned, costed, line.qty).ok;
+
+    const allocations = plannedUsable
+      ? costPlan(planned, costed)
+      : selectLotsFifo(costed, line.qty);
+
     plan.push({ line, allocations });
   }
 
@@ -167,6 +185,63 @@ async function consumeStock(
       });
     }
   });
+}
+
+// ── Lot availability for order entry ──────────────────────────────────────────
+
+export interface AvailableLot {
+  id: string;
+  lotNumber: string;
+  remainingQty: number;
+  unitCost: number;
+  receivedAt: string;
+  expiryDate: string | null;
+  /** Quantity FIFO would draw from this lot for the requested qty; 0 if untouched. */
+  fifoQty: number;
+}
+
+/**
+ * Open cost layers for a SKU at a warehouse, oldest first, annotated with what FIFO
+ * would take. The form renders these as the lot dropdown and pre-selects fifoQty.
+ */
+export async function getAvailableLots(
+  skuId: string,
+  warehouseId: string,
+  neededQty: number
+): Promise<AvailableLot[]> {
+  const session = await getServerSession(authOptions);
+  if (!session) throw new Error("Unauthenticated");
+
+  const lots = await prisma.lot.findMany({
+    where: { skuId, warehouseId, remainingQty: { gt: 0 }, status: "ACTIVE" },
+    orderBy: [{ receivedAt: "asc" }, { id: "asc" }],
+  });
+
+  const costed = lots.map((l) => ({
+    id: l.id,
+    remainingQty: l.remainingQty,
+    unitCost: Number(l.unitCost),
+    receivedAt: l.receivedAt,
+  }));
+
+  // A short line is not an error here — the picker still lists what exists so the
+  // salesperson can see how much is actually on hand.
+  let fifo: Map<string, number>;
+  try {
+    fifo = new Map(selectLotsFifo(costed, neededQty).map((a) => [a.lotId, a.take]));
+  } catch {
+    fifo = new Map();
+  }
+
+  return lots.map((l) => ({
+    id: l.id,
+    lotNumber: l.lotNumber,
+    remainingQty: l.remainingQty,
+    unitCost: Number(l.unitCost),
+    receivedAt: l.receivedAt.toISOString(),
+    expiryDate: l.expiryDate ? l.expiryDate.toISOString() : null,
+    fifoQty: fifo.get(l.id) ?? 0,
+  }));
 }
 
 /**
@@ -459,6 +534,10 @@ const NewOrderSchema = z.object({
       unitPrice: z.number().nonnegative(),
       isFree: z.boolean().default(false),
       discountPct: z.number().min(0).max(100).optional(),
+      // Explicit lot selection. Omitted or empty means "use FIFO", which is what the
+      // form submits unless the salesperson edited the pre-filled selection.
+      lotPlan: z.array(z.object({ lotId: z.string().min(1), qty: z.number().int().positive() })).optional(),
+      lotOverrideReason: z.string().optional(),
     })
   ).min(1),
 });
@@ -536,6 +615,41 @@ export async function createOrder(input: z.input<typeof NewOrderSchema>) {
   const items = await prisma.catalogItem.findMany({ where: { id: { in: skuIds } } });
   const itemMap = Object.fromEntries(items.map((i) => [i.id, i]));
 
+  // ── Lot selection ───────────────────────────────────────────────────────────
+  // Validated server-side: the picker's selection is a proposal, and a server action is
+  // a public endpoint. A selection that differs from FIFO is recorded as an override
+  // with its reason so the deviation is answerable later.
+  const lotDecisions = await Promise.all(
+    linesWithPrice.map(async (l) => {
+      const plan = l.lotPlan ?? [];
+      if (plan.length === 0) return { plan: [], isOverride: false, reason: null as string | null };
+
+      const lots = await prisma.lot.findMany({
+        where: { skuId: l.skuId, warehouseId: data.warehouseId, remainingQty: { gt: 0 }, status: "ACTIVE" },
+      });
+      const costed = lots.map((lot) => ({
+        id: lot.id,
+        remainingQty: lot.remainingQty,
+        unitCost: Number(lot.unitCost),
+        receivedAt: lot.receivedAt,
+      }));
+
+      const check = validateLotPlan(plan, costed, l.qty);
+      if (!check.ok) {
+        throw new Error(`${itemMap[l.skuId]?.name ?? l.skuId}: ${check.error}`);
+      }
+
+      const isOverride = !isFifoPlan(plan, costed, l.qty);
+      if (isOverride && !l.lotOverrideReason?.trim()) {
+        throw new Error(
+          `${itemMap[l.skuId]?.name ?? l.skuId}: selecting lots other than the FIFO default requires a reason.`
+        );
+      }
+
+      return { plan, isOverride, reason: isOverride ? l.lotOverrideReason!.trim() : null };
+    })
+  );
+
   const order = await prisma.order.create({
     data: {
       id: orderId,
@@ -552,7 +666,7 @@ export async function createOrder(input: z.input<typeof NewOrderSchema>) {
       msrCode: data.msrCode?.trim() || null,
       discountMode: discountMode ?? null,
       lines: {
-        create: linesWithPrice.map((l) => ({
+        create: linesWithPrice.map((l, i) => ({
           skuId: l.skuId,
           name: itemMap[l.skuId]?.name ?? l.skuId,
           unit: itemMap[l.skuId]?.unit ?? "pc",
@@ -561,6 +675,11 @@ export async function createOrder(input: z.input<typeof NewOrderSchema>) {
           lineTotal: l.qty * l.unitPrice,
           isFree: l.isFree,
           discountPct: l.discountPct ?? null,
+          manualLotOverride: lotDecisions[i].isOverride,
+          manualLotOverrideReason: lotDecisions[i].reason,
+          plannedLots: {
+            create: lotDecisions[i].plan.map((p) => ({ lotId: p.lotId, qtyPlanned: p.qty })),
+          },
         })),
       },
       events: {
@@ -572,6 +691,30 @@ export async function createOrder(input: z.input<typeof NewOrderSchema>) {
       },
     },
   });
+
+  // Deviating from FIFO is legitimate but must be answerable — record it outside the
+  // order's own tables so it survives edits to the order.
+  const overrides = linesWithPrice
+    .map((l, i) => ({ line: l, decision: lotDecisions[i] }))
+    .filter((x) => x.decision.isOverride);
+
+  if (overrides.length > 0) {
+    await writeAudit({
+      action: "ORDER_LOT_OVERRIDE",
+      entityType: "Order",
+      entityId: order.id,
+      actorId: session.user.id,
+      actorName: session.user.name ?? session.user.email ?? undefined,
+      meta: {
+        lines: overrides.map((x) => ({
+          sku: itemMap[x.line.skuId]?.sku ?? x.line.skuId,
+          qty: x.line.qty,
+          reason: x.decision.reason,
+          lots: x.decision.plan,
+        })),
+      },
+    });
+  }
 
   revalidatePath("/orders");
   return order.id;
