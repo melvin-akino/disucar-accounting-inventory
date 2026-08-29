@@ -1,0 +1,381 @@
+"use server";
+
+import { revalidatePath } from "next/cache";
+import { getServerSession } from "next-auth";
+import { authOptions } from "@/lib/auth";
+import { prisma } from "@/lib/prisma";
+import { z } from "zod";
+import type { BoDisposition, BoReasonType } from "@prisma/client";
+import { hasActiveReliefGrant } from "@/lib/reliever";
+import { nextCode } from "@/lib/ids";
+
+async function requireAccess() {
+  const session = await getServerSession(authOptions);
+  if (!session) throw new Error("Forbidden");
+  if (["WAREHOUSE", "ADMIN"].includes(session.user.role)) return session;
+  // A WAREHOUSE reliever may receive POs / log B.O.s during their covered window (item 11).
+  if (await hasActiveReliefGrant(session.user.id, "WAREHOUSE")) return session;
+  throw new Error("Forbidden");
+}
+
+async function requireFinanceAccess() {
+  const session = await getServerSession(authOptions);
+  if (!session || !["FINANCE", "ADMIN"].includes(session.user.role)) throw new Error("Forbidden");
+  return session;
+}
+
+// Inventory GL account per warehouse code (see src/lib/coa.ts)
+const INVENTORY_ACCOUNT_BY_WAREHOUSE_CODE: Record<string, string> = {
+  MNL: "1200",
+  CEB: "1210",
+  DVO: "1220",
+  URD: "1230",
+};
+
+function genPoId() {
+  return nextCode("PO", (since) => prisma.inboundPO.count({ where: { createdAt: { gte: since } } }));
+}
+
+// ── Create PO ─────────────────────────────────────────────────────────────────
+const CreatePoSchema = z.object({
+  supplierId: z.string(),
+  warehouseId: z.string(),
+  expectedAt: z.string(),
+  lines: z.array(z.object({ skuId: z.string(), qty: z.number().int().positive(), unitCost: z.number().min(0) })).min(1),
+});
+
+export async function createPO(input: z.infer<typeof CreatePoSchema>) {
+  await requireAccess();
+  const data = CreatePoSchema.parse(input);
+
+  const total = data.lines.reduce((s, l) => s + l.qty * l.unitCost, 0);
+  const poId = await genPoId();
+
+  await prisma.inboundPO.create({
+    data: {
+      id: poId,
+      supplierId: data.supplierId,
+      warehouseId: data.warehouseId,
+      expectedAt: new Date(data.expectedAt),
+      total,
+      lines: {
+        create: data.lines.map(l => ({ skuId: l.skuId, qty: l.qty })),
+      },
+    },
+  });
+
+  revalidatePath("/inbound");
+}
+
+// ── Update PO status ──────────────────────────────────────────────────────────
+export async function updatePOStatus(id: string, status: "RECEIVING" | "DELAYED") {
+  await requireAccess();
+  await prisma.inboundPO.update({ where: { id }, data: { status } });
+  revalidatePath("/inbound");
+}
+
+// ── Receive PO (mark received, update stock, create lots) ─────────────────────
+const ReceivePoSchema = z.object({
+  poId: z.string(),
+  lines: z.array(z.object({
+    lineId: z.string(),
+    skuId: z.string(),
+    accepted: z.number().int().min(0),
+    damaged: z.number().int().min(0),
+    lotNumber: z.string().optional(),
+    expiryDate: z.string().optional(),
+  })),
+});
+
+export async function receivePO(input: z.infer<typeof ReceivePoSchema>) {
+  const session = await requireAccess();
+  const { poId, lines } = ReceivePoSchema.parse(input);
+
+  const po = await prisma.inboundPO.findUniqueOrThrow({ where: { id: poId } });
+
+  await prisma.$transaction(async (tx) => {
+    for (const l of lines) {
+      await tx.inboundPOLine.update({
+        where: { id: l.lineId },
+        data: { accepted: l.accepted, damaged: l.damaged },
+      });
+
+      if (l.accepted > 0) {
+        await tx.stock.upsert({
+          where: { skuId_warehouseId: { skuId: l.skuId, warehouseId: po.warehouseId } },
+          create: { skuId: l.skuId, warehouseId: po.warehouseId, onHand: l.accepted },
+          update: { onHand: { increment: l.accepted } },
+        });
+
+        await tx.stockMove.create({
+          data: {
+            skuId: l.skuId,
+            warehouseId: po.warehouseId,
+            type: "RECEIPT",
+            qty: l.accepted,
+            ref: poId,
+            note: l.damaged > 0 ? `${l.damaged} damaged` : undefined,
+            by: session.user.name ?? session.user.email,
+          },
+        });
+
+        // Create or update lot record if lot number provided
+        const lotNum = l.lotNumber?.trim() || `LOT-${poId}`;
+        const expiry = l.expiryDate ? new Date(l.expiryDate) : undefined;
+
+        const existing = await tx.lot.findFirst({
+          where: { lotNumber: lotNum, skuId: l.skuId, warehouseId: po.warehouseId },
+        });
+
+        if (existing) {
+          await tx.lot.update({
+            where: { id: existing.id },
+            data: {
+              receivedQty: existing.receivedQty + l.accepted,
+              remainingQty: existing.remainingQty + l.accepted,
+              ...(expiry ? { expiryDate: expiry } : {}),
+            },
+          });
+        } else {
+          await tx.lot.create({
+            data: {
+              lotNumber: lotNum,
+              skuId: l.skuId,
+              warehouseId: po.warehouseId,
+              receivedQty: l.accepted,
+              remainingQty: l.accepted,
+              expiryDate: expiry,
+              poId,
+            },
+          });
+        }
+      }
+    }
+
+    await tx.inboundPO.update({ where: { id: poId }, data: { status: "RECEIVED" } });
+  });
+
+  revalidatePath("/inbound");
+  revalidatePath("/inventory");
+}
+
+// ── Generate Reorder POs from low-stock items ──────────────────────────────────
+export async function generateReorderPOs(warehouseId: string | "ALL") {
+  const session = await requireAccess();
+
+  const lowStocks = await prisma.stock.findMany({
+    where: {
+      ...(warehouseId !== "ALL" ? { warehouseId } : {}),
+      reorderAt: { not: null },
+    },
+    include: {
+      sku: { select: { id: true, name: true, supplierId: true } },
+    },
+  });
+
+  const needReorder = lowStocks.filter(
+    s => s.reorderAt != null && s.onHand - s.reserved <= s.reorderAt
+  );
+
+  if (needReorder.length === 0) return { created: 0 };
+
+  // Group by supplierId
+  const bySupplier = new Map<string, typeof needReorder>();
+  for (const s of needReorder) {
+    const key = s.sku.supplierId ?? "__none__";
+    if (!bySupplier.has(key)) bySupplier.set(key, []);
+    bySupplier.get(key)!.push(s);
+  }
+
+  let created = 0;
+  for (const [supplierId, items] of Array.from(bySupplier)) {
+    if (supplierId === "__none__") continue; // skip items with no supplier
+
+    const poId = genPoId() + `-R${created}`;
+    const expectedDate = new Date();
+    expectedDate.setDate(expectedDate.getDate() + 7); // default 7-day lead time
+
+    const whId = items[0].warehouseId;
+    await prisma.inboundPO.create({
+      data: {
+        id: poId,
+        supplierId,
+        warehouseId: whId,
+        expectedAt: expectedDate,
+        status: "EXPECTED",
+        total: 0,
+        lines: {
+          create: items.map(s => ({
+            skuId: s.skuId,
+            qty: Math.max((s.maxLevel ?? s.reorderAt! * 2) - s.onHand, 1),
+          })),
+        },
+      },
+    });
+    created++;
+  }
+
+  revalidatePath("/inbound");
+  revalidatePath("/inventory");
+  return { created };
+}
+
+// ── Log a B.O. (backorder) against a PO line ───────────────────────────────────
+const LogBackorderSchema = z.object({
+  poId: z.string(),
+  poLineId: z.string(),
+  skuId: z.string(),
+  warehouseId: z.string(),
+  qty: z.number().int().positive(),
+  costPerUnit: z.number().min(0),
+  disposition: z.enum(["GOOD", "BAD"]),
+  badReasonType: z.enum(["RAT_BITE", "DAMAGED_CONTAINER", "EXPIRED", "WRONG_ITEM", "SHORT_SHIP", "OTHER"]).optional(),
+  badReasonNote: z.string().optional(),
+}).refine(
+  (d) => d.disposition !== "BAD" || !!d.badReasonType,
+  { message: "badReasonType is required when disposition is BAD", path: ["badReasonType"] }
+);
+
+export async function logBackorder(input: z.infer<typeof LogBackorderSchema>) {
+  const session = await requireAccess();
+  const data = LogBackorderSchema.parse(input);
+
+  const line = await prisma.inboundPOLine.findUniqueOrThrow({
+    where: { id: data.poLineId },
+    include: { backorders: true, po: { include: { warehouse: true } } },
+  });
+
+  const alreadyLogged = line.backorders.reduce((s, b) => s + b.qty, 0);
+  const outstanding = line.damaged - alreadyLogged;
+  if (data.qty > outstanding) {
+    throw new Error(`Cannot log ${data.qty} units — only ${outstanding} unit(s) of damaged qty remain unresolved on this line.`);
+  }
+
+  const disposition = data.disposition as BoDisposition;
+  const badReasonType = data.badReasonType as BoReasonType | undefined;
+
+  await prisma.$transaction(async (tx) => {
+    await tx.backorderReturn.create({
+      data: {
+        poId: data.poId,
+        poLineId: data.poLineId,
+        skuId: data.skuId,
+        warehouseId: data.warehouseId,
+        qty: data.qty,
+        costPerUnit: data.costPerUnit,
+        disposition,
+        badReasonType: disposition === "BAD" ? badReasonType : null,
+        badReasonNote: data.badReasonNote,
+        loggedById: session.user.id,
+        loggedByName: session.user.name ?? session.user.email,
+      },
+    });
+
+    if (disposition === "GOOD") {
+      await tx.stock.upsert({
+        where: { skuId_warehouseId: { skuId: data.skuId, warehouseId: data.warehouseId } },
+        update: { onHand: { increment: data.qty } },
+        create: { skuId: data.skuId, warehouseId: data.warehouseId, onHand: data.qty },
+      });
+
+      await tx.stockMove.create({
+        data: {
+          skuId: data.skuId,
+          warehouseId: data.warehouseId,
+          type: "RETURN",
+          qty: data.qty,
+          ref: `BO-${data.poId}`,
+          note: `Good B.O. restock — PO ${data.poId}`,
+          by: session.user.name ?? session.user.email,
+        },
+      });
+
+      const lotNum = `LOT-${data.poId}`;
+      const existingLot = await tx.lot.findFirst({
+        where: { lotNumber: lotNum, skuId: data.skuId, warehouseId: data.warehouseId },
+      });
+      if (existingLot) {
+        await tx.lot.update({
+          where: { id: existingLot.id },
+          data: { receivedQty: { increment: data.qty }, remainingQty: { increment: data.qty } },
+        });
+      } else {
+        await tx.lot.create({
+          data: {
+            lotNumber: lotNum,
+            skuId: data.skuId,
+            warehouseId: data.warehouseId,
+            receivedQty: data.qty,
+            remainingQty: data.qty,
+            poId: data.poId,
+          },
+        });
+      }
+    } else {
+      // BAD: write off the cost — never enters sellable inventory
+      const invAccount = INVENTORY_ACCOUNT_BY_WAREHOUSE_CODE[line.po.warehouse.code];
+      if (!invAccount) throw new Error(`No inventory GL account configured for warehouse ${line.po.warehouse.code}`);
+
+      const amount = Math.round(data.qty * data.costPerUnit * 100) / 100;
+      if (amount > 0) {
+        const jeId = await nextCode("JE", (since) => prisma.journalEntry.count({ where: { createdAt: { gte: since } } }));
+        await tx.journalEntry.create({
+          data: {
+            id: jeId,
+            source: "INV",
+            ref: data.poId,
+            memo: `Bad B.O. write-off — PO ${data.poId} (${badReasonType})`,
+            postedById: session.user.id,
+            lines: {
+              create: [
+                { code: "5800", dr: amount, cr: 0 },
+                { code: invAccount, dr: 0, cr: amount },
+              ],
+            },
+          },
+        });
+      }
+    }
+  });
+
+  revalidatePath("/inbound");
+  revalidatePath("/inventory");
+  revalidatePath("/ledger");
+}
+
+// ── Close a PO once payment and B.O. cost tally ────────────────────────────────
+export async function closePO(poId: string) {
+  const session = await requireFinanceAccess();
+
+  const po = await prisma.inboundPO.findUniqueOrThrow({
+    where: { id: poId },
+    include: { lines: { include: { backorders: true, sku: true } }, bills: true },
+  });
+
+  if (po.closedAt) throw new Error(`PO ${poId} is already closed.`);
+
+  for (const line of po.lines) {
+    const logged = line.backorders.reduce((s, b) => s + b.qty, 0);
+    if (logged !== line.damaged) {
+      throw new Error(
+        `${line.damaged - logged} unit(s) of ${line.sku.name} still unresolved — log a B.O. disposition for all damaged units before closing.`
+      );
+    }
+  }
+
+  if (po.bills.length === 0) {
+    throw new Error(`No bill is linked to PO ${poId} yet — link the supplier's bill before closing.`);
+  }
+  const unpaid = po.bills.find(b => b.status !== "PAID");
+  if (unpaid) {
+    throw new Error(`Bill ${unpaid.id} is not fully paid (status: ${unpaid.status}) — payment must tally before closing.`);
+  }
+
+  await prisma.inboundPO.update({
+    where: { id: poId },
+    data: { closedAt: new Date(), closedById: session.user.id },
+  });
+
+  revalidatePath("/inbound");
+  revalidatePath("/ledger");
+}

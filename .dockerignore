@@ -1,0 +1,17 @@
+.git
+.gitignore
+.env
+.env.local
+.env.*.local
+node_modules
+.next
+out
+dist
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+prototype/
+README.md
+PLAN.md
+.claude/

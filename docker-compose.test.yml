@@ -1,0 +1,39 @@
+version: "3.9"
+
+# Runs Vitest unit tests in an isolated container against a test DB.
+# Usage:
+#   docker compose -f docker-compose.test.yml up --build --abort-on-container-exit
+
+services:
+  # ── Test PostgreSQL (ephemeral, no volume) ───────────────────────────────────
+  db-test:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: disucar-sales_test
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d disucar-sales_test"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ── Vitest unit + action tests ───────────────────────────────────────────────
+  unit-tests:
+    build:
+      context: .
+      target: builder
+    command: >
+      sh -c "npx prisma db push --accept-data-loss &&
+             npm run test -- --reporter=verbose"
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@db-test:5432/disucar-sales_test
+      DIRECT_URL: postgresql://postgres:postgres@db-test:5432/disucar-sales_test
+      NEXTAUTH_SECRET: test-secret
+      NEXTAUTH_URL: http://localhost:3000
+      NEXT_PUBLIC_SUPABASE_URL: http://localhost:54321
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: placeholder
+      NODE_ENV: test
+    depends_on:
+      db-test:
+        condition: service_healthy
