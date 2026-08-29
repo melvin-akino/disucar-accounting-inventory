@@ -16,8 +16,8 @@ services:
              npx tsx prisma/seed.ts"
     environment:
       TZ: Asia/Manila
-      DATABASE_URL: postgresql://postgres:changeme@localhost:5432/disucar-sales
-      DIRECT_URL: postgresql://postgres:changeme@localhost:5432/disucar-sales
+      DATABASE_URL: postgresql://postgres:changeme@localhost:5432/disucar
+      DIRECT_URL: postgresql://postgres:changeme@localhost:5432/disucar
       NEXTAUTH_SECRET: demo-secret-for-local-dev-change-in-prod
       NEXTAUTH_URL: http://localhost:3000
       NEXT_PUBLIC_SUPABASE_URL: http://localhost:54321
@@ -36,8 +36,8 @@ services:
       NODE_ENV: production
       # Storage stays UTC; this controls rendering and local-day boundary math only.
       TZ: Asia/Manila
-      DATABASE_URL: postgresql://postgres:changeme@localhost:5432/disucar-sales
-      DIRECT_URL: postgresql://postgres:changeme@localhost:5432/disucar-sales
+      DATABASE_URL: postgresql://postgres:changeme@localhost:5432/disucar
+      DIRECT_URL: postgresql://postgres:changeme@localhost:5432/disucar
       NEXTAUTH_SECRET: demo-secret-for-local-dev-change-in-prod
       NEXTAUTH_URL: http://localhost:3000
       NEXT_PUBLIC_SUPABASE_URL: http://localhost:54321
