@@ -11,6 +11,8 @@ import { orderTotal } from "@/lib/utils";
 import { getCustomerCredit } from "@/lib/credit";
 import { sendOrderEmail } from "@/lib/email";
 import { nextCode } from "@/lib/ids";
+import { selectLotsFifo, totalAllocationCost, type CostedLotAllocation } from "@/lib/order-logic";
+import { inventoryAccountFor, COGS_ACCOUNT } from "@/lib/coa";
 
 export { getCustomerCredit };
 
@@ -56,48 +58,114 @@ async function releaseReservation(orderId: string, warehouseId: string) {
   );
 }
 
-async function consumeStock(orderId: string, warehouseId: string, actorName: string) {
-  const lines = await prisma.orderLine.findMany({ where: { orderId } });
+/**
+ * Consume stock for a delivered order: decrement the stock row, draw down cost layers
+ * FIFO, and post the resulting COGS.
+ *
+ * Runs as one transaction. Previously the stock decrement, the lot draw-down and (now)
+ * the ledger posting were separate writes, so a mid-way failure could leave stock
+ * decremented with lots untouched — and would now leave inventory credited with no
+ * matching COGS debit.
+ */
+async function consumeStock(
+  orderId: string,
+  warehouseId: string,
+  actorName: string,
+  actorId: string
+) {
+  const [lines, warehouse] = await Promise.all([
+    prisma.orderLine.findMany({ where: { orderId } }),
+    prisma.warehouse.findUniqueOrThrow({ where: { id: warehouseId }, select: { code: true } }),
+  ]);
+  const invAccount = inventoryAccountFor(warehouse.code);
+
+  // Allocate before opening the transaction so an insufficient-stock error surfaces
+  // without having written anything.
+  const plan: { line: (typeof lines)[number]; allocations: CostedLotAllocation[] }[] = [];
   for (const line of lines) {
-    // Decrement stock row
-    await prisma.stock.updateMany({
-      where: { skuId: line.skuId, warehouseId },
-      data: {
-        onHand: { decrement: line.qty },
-        reserved: { decrement: line.qty },
-      },
-    });
-    await prisma.stockMove.create({
-      data: {
-        skuId: line.skuId,
-        warehouseId,
-        type: "PICK",
-        qty: -line.qty,
-        ref: orderId,
-        note: `Picked for order ${orderId}`,
-        by: actorName,
-      },
-    });
-    // FEFO lot deduction: pick from earliest-expiry lots first
-    let remaining = line.qty;
     const lots = await prisma.lot.findMany({
-      where: { skuId: line.skuId, warehouseId, remainingQty: { gt: 0 } },
-      orderBy: [{ expiryDate: "asc" }, { createdAt: "asc" }],
+      where: { skuId: line.skuId, warehouseId, remainingQty: { gt: 0 }, status: "ACTIVE" },
     });
-    for (const lot of lots) {
-      if (remaining <= 0) break;
-      const take = Math.min(lot.remainingQty, remaining);
-      await prisma.lot.update({
-        where: { id: lot.id },
-        data: { remainingQty: { decrement: take } },
-      });
-      // Record FEFO traceability — which lot was consumed for this order line
-      await prisma.orderLineLot.create({
-        data: { orderLineId: line.id, lotId: lot.id, qtyTaken: take },
-      });
-      remaining -= take;
-    }
+    const allocations = selectLotsFifo(
+      lots.map((l) => ({
+        id: l.id,
+        remainingQty: l.remainingQty,
+        unitCost: Number(l.unitCost),
+        receivedAt: l.receivedAt,
+      })),
+      line.qty
+    );
+    plan.push({ line, allocations });
   }
+
+  const cogsAmount = totalAllocationCost(plan.flatMap((p) => p.allocations));
+  const journalId = cogsAmount > 0
+    ? await nextCode("JE", (since) => prisma.journalEntry.count({ where: { createdAt: { gte: since } } }))
+    : null;
+
+  await prisma.$transaction(async (tx) => {
+    for (const { line, allocations } of plan) {
+      await tx.stock.updateMany({
+        where: { skuId: line.skuId, warehouseId },
+        data: {
+          onHand: { decrement: line.qty },
+          reserved: { decrement: line.qty },
+        },
+      });
+
+      const lineCost = totalAllocationCost(allocations);
+      await tx.stockMove.create({
+        data: {
+          skuId: line.skuId,
+          warehouseId,
+          type: "PICK",
+          qty: -line.qty,
+          costPerUnit: line.qty > 0 ? lineCost / line.qty : 0,
+          ref: orderId,
+          note: `Picked for order ${orderId}`,
+          by: actorName,
+        },
+      });
+
+      for (const a of allocations) {
+        await tx.lot.update({
+          where: { id: a.lotId },
+          data: { remainingQty: { decrement: a.take } },
+        });
+        // Traceability plus the frozen cost this order actually bore. A line spanning
+        // two deliveries produces one row per layer, each at its own cost.
+        await tx.orderLineLot.create({
+          data: {
+            orderLineId: line.id,
+            lotId: a.lotId,
+            qtyTaken: a.take,
+            unitCost: a.unitCost,
+            costTotal: a.costTotal,
+          },
+        });
+      }
+    }
+
+    // COGS recognition. Account 5000 existed in the chart of accounts but nothing had
+    // ever debited it, so reporting showed gross sales rather than margin.
+    if (journalId && cogsAmount > 0) {
+      await tx.journalEntry.create({
+        data: {
+          id: journalId,
+          source: "INV",
+          ref: orderId,
+          memo: `COGS — order ${orderId}`,
+          postedById: actorId,
+          lines: {
+            create: [
+              { code: COGS_ACCOUNT, dr: cogsAmount, cr: 0 },
+              { code: invAccount,   dr: 0,          cr: cogsAmount },
+            ],
+          },
+        },
+      });
+    }
+  });
 }
 
 // ── Advance order state FSM ───────────────────────────────────────────────────
@@ -140,7 +208,12 @@ export async function advanceOrderState(
 
   // Consume stock when delivered (decrement onHand + release reservation)
   if (transition.next === "DELIVERED") {
-    await consumeStock(orderId, order.warehouseId, session.user.name ?? session.user.email ?? session.user.id);
+    await consumeStock(
+      orderId,
+      order.warehouseId,
+      session.user.name ?? session.user.email ?? session.user.id,
+      session.user.id
+    );
   }
 
   // Email notification (non-blocking)

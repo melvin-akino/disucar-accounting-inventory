@@ -43,6 +43,7 @@ export default async function InboundPage() {
       skuName: l.sku.name,
       unit: l.sku.unit,
       qty: l.qty,
+      unitCost: Number(l.unitCost),
       accepted: l.accepted,
       damaged: l.damaged,
     })),

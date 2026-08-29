@@ -503,12 +503,16 @@ model InboundPO {
 }
 
 model InboundPOLine {
-  id       String @id @default(cuid())
+  id       String  @id @default(cuid())
   poId     String
   skuId    String
   qty      Int
-  accepted Int    @default(0)
-  damaged  Int    @default(0)
+  // Agreed cost per unit for this PO line. Previously collected on the create-PO form,
+  // used to compute InboundPO.total and then discarded; it is now persisted because it
+  // seeds Lot.unitCost when the PO is received.
+  unitCost Decimal @default(0) @db.Decimal(12, 4)
+  accepted Int     @default(0)
+  damaged  Int     @default(0)
 
   po         InboundPO         @relation(fields: [poId],  references: [id], onDelete: Cascade)
   sku        CatalogItem       @relation(fields: [skuId], references: [id])
@@ -883,6 +887,14 @@ model Lot {
   warehouseId    String
   receivedQty    Int       @default(0)
   remainingQty   Int       @default(0)
+  // Landed cost of one unit in THIS receipt. Cost varies per delivery (cement at 200
+  // today, 205 next week), so it is stored on the lot rather than on the SKU — this is
+  // the layer FIFO consumes and what COGS is computed from. 4 dp absorbs the rounding
+  // of bulk costing (e.g. 7,000 over 18 m3 = 388.8889/m3).
+  unitCost       Decimal   @default(0) @db.Decimal(12, 4)
+  // Physical receipt time. FIFO orders by this, NOT by createdAt, so a backdated
+  // receipt still consumes in the correct sequence.
+  receivedAt     DateTime  @default(now())
   expiryDate     DateTime?
   poId           String?
   status         LotStatus @default(ACTIVE)
@@ -897,6 +909,8 @@ model Lot {
   orderLineLots  OrderLineLot[]
 
   @@unique([lotNumber, skuId, warehouseId])
+  // FIFO lookup: open layers for a SKU at a warehouse, oldest receipt first.
+  @@index([skuId, warehouseId, receivedAt])
   @@map("lots")
 }
 
@@ -949,6 +963,11 @@ model OrderLineLot {
   orderLineId String
   lotId       String
   qtyTaken    Int
+  // Cost snapshot frozen at allocation time. Deliberately duplicated from Lot.unitCost:
+  // a later correction to the lot must never retroactively rewrite a posted COGS entry.
+  unitCost    Decimal  @default(0) @db.Decimal(12, 4)
+  costTotal   Decimal  @default(0) @db.Decimal(14, 2)
+  allocatedAt DateTime @default(now())
 
   orderLine   OrderLine @relation(fields: [orderLineId], references: [id], onDelete: Cascade)
   lot         Lot       @relation(fields: [lotId],       references: [id])

@@ -71,6 +71,26 @@ export const OPENING_BALANCES: Record<string, number> = {
   "5600":    80_000,  "5700":     38_000,
 };
 
+// Inventory GL account per warehouse code. Shared by receiving (B.O. write-offs) and
+// by order fulfilment (FIFO COGS), which must credit the same account that receiving
+// debited or inventory will never net to zero.
+export const INVENTORY_ACCOUNT_BY_WAREHOUSE_CODE: Record<string, string> = {
+  MNL: "1200",
+  CEB: "1210",
+  DVO: "1220",
+  URD: "1230",
+};
+
+export function inventoryAccountFor(warehouseCode: string): string {
+  const account = INVENTORY_ACCOUNT_BY_WAREHOUSE_CODE[warehouseCode];
+  if (!account) {
+    throw new Error(`No inventory GL account configured for warehouse ${warehouseCode}`);
+  }
+  return account;
+}
+
+export const COGS_ACCOUNT = "5000";
+
 export type TrialBalance = Record<string, number>;
 
 export function computeTrialBalance(

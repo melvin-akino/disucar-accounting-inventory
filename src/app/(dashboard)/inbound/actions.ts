@@ -8,6 +8,7 @@ import { z } from "zod";
 import type { BoDisposition, BoReasonType } from "@prisma/client";
 import { hasActiveReliefGrant } from "@/lib/reliever";
 import { nextCode } from "@/lib/ids";
+import { inventoryAccountFor } from "@/lib/coa";
 
 async function requireAccess() {
   const session = await getServerSession(authOptions);
@@ -23,14 +24,6 @@ async function requireFinanceAccess() {
   if (!session || !["FINANCE", "ADMIN"].includes(session.user.role)) throw new Error("Forbidden");
   return session;
 }
-
-// Inventory GL account per warehouse code (see src/lib/coa.ts)
-const INVENTORY_ACCOUNT_BY_WAREHOUSE_CODE: Record<string, string> = {
-  MNL: "1200",
-  CEB: "1210",
-  DVO: "1220",
-  URD: "1230",
-};
 
 function genPoId() {
   return nextCode("PO", (since) => prisma.inboundPO.count({ where: { createdAt: { gte: since } } }));
@@ -59,7 +52,7 @@ export async function createPO(input: z.infer<typeof CreatePoSchema>) {
       expectedAt: new Date(data.expectedAt),
       total,
       lines: {
-        create: data.lines.map(l => ({ skuId: l.skuId, qty: l.qty })),
+        create: data.lines.map(l => ({ skuId: l.skuId, qty: l.qty, unitCost: l.unitCost })),
       },
     },
   });
@@ -84,6 +77,8 @@ const ReceivePoSchema = z.object({
     damaged: z.number().int().min(0),
     lotNumber: z.string().optional(),
     expiryDate: z.string().optional(),
+    // Landed cost for THIS receipt. Omitted means "same as agreed on the PO line".
+    unitCost: z.number().min(0).optional(),
   })),
 });
 
@@ -91,7 +86,11 @@ export async function receivePO(input: z.infer<typeof ReceivePoSchema>) {
   const session = await requireAccess();
   const { poId, lines } = ReceivePoSchema.parse(input);
 
-  const po = await prisma.inboundPO.findUniqueOrThrow({ where: { id: poId } });
+  const po = await prisma.inboundPO.findUniqueOrThrow({
+    where: { id: poId },
+    include: { lines: { select: { id: true, unitCost: true } } },
+  });
+  const poLineCost = new Map(po.lines.map((l) => [l.id, Number(l.unitCost)]));
 
   await prisma.$transaction(async (tx) => {
     for (const l of lines) {
@@ -101,6 +100,8 @@ export async function receivePO(input: z.infer<typeof ReceivePoSchema>) {
       });
 
       if (l.accepted > 0) {
+        const unitCost = l.unitCost ?? poLineCost.get(l.lineId) ?? 0;
+
         await tx.stock.upsert({
           where: { skuId_warehouseId: { skuId: l.skuId, warehouseId: po.warehouseId } },
           create: { skuId: l.skuId, warehouseId: po.warehouseId, onHand: l.accepted },
@@ -113,42 +114,45 @@ export async function receivePO(input: z.infer<typeof ReceivePoSchema>) {
             warehouseId: po.warehouseId,
             type: "RECEIPT",
             qty: l.accepted,
+            costPerUnit: unitCost,
             ref: poId,
             note: l.damaged > 0 ? `${l.damaged} damaged` : undefined,
             by: session.user.name ?? session.user.email,
           },
         });
 
-        // Create or update lot record if lot number provided
-        const lotNum = l.lotNumber?.trim() || `LOT-${poId}`;
+        // One cost layer per receipt. Receiving used to merge into any lot sharing the
+        // same number, which averaged away the price movement between deliveries — the
+        // 200.00 and 205.00 cement became one indistinguishable pile and FIFO had
+        // nothing to consume in order. An explicit lot number from the warehouse is
+        // still honoured, but is suffixed when it collides with an existing layer so
+        // each physical delivery keeps its own cost.
+        const baseLotNum = l.lotNumber?.trim() || `LOT-${poId}`;
         const expiry = l.expiryDate ? new Date(l.expiryDate) : undefined;
 
-        const existing = await tx.lot.findFirst({
-          where: { lotNumber: lotNum, skuId: l.skuId, warehouseId: po.warehouseId },
-        });
-
-        if (existing) {
-          await tx.lot.update({
-            where: { id: existing.id },
-            data: {
-              receivedQty: existing.receivedQty + l.accepted,
-              remainingQty: existing.remainingQty + l.accepted,
-              ...(expiry ? { expiryDate: expiry } : {}),
-            },
+        let lotNum = baseLotNum;
+        for (let seq = 2; ; seq++) {
+          const clash = await tx.lot.findFirst({
+            where: { lotNumber: lotNum, skuId: l.skuId, warehouseId: po.warehouseId },
+            select: { id: true },
           });
-        } else {
-          await tx.lot.create({
-            data: {
-              lotNumber: lotNum,
-              skuId: l.skuId,
-              warehouseId: po.warehouseId,
-              receivedQty: l.accepted,
-              remainingQty: l.accepted,
-              expiryDate: expiry,
-              poId,
-            },
-          });
+          if (!clash) break;
+          lotNum = `${baseLotNum}-${seq}`;
         }
+
+        await tx.lot.create({
+          data: {
+            lotNumber: lotNum,
+            skuId: l.skuId,
+            warehouseId: po.warehouseId,
+            receivedQty: l.accepted,
+            remainingQty: l.accepted,
+            unitCost,
+            receivedAt: new Date(),
+            expiryDate: expiry,
+            poId,
+          },
+        });
       }
     }
 
@@ -284,37 +288,42 @@ export async function logBackorder(input: z.infer<typeof LogBackorderSchema>) {
           warehouseId: data.warehouseId,
           type: "RETURN",
           qty: data.qty,
+          costPerUnit: data.costPerUnit,
           ref: `BO-${data.poId}`,
           note: `Good B.O. restock — PO ${data.poId}`,
           by: session.user.name ?? session.user.email,
         },
       });
 
-      const lotNum = `LOT-${data.poId}`;
-      const existingLot = await tx.lot.findFirst({
-        where: { lotNumber: lotNum, skuId: data.skuId, warehouseId: data.warehouseId },
-      });
-      if (existingLot) {
-        await tx.lot.update({
-          where: { id: existingLot.id },
-          data: { receivedQty: { increment: data.qty }, remainingQty: { increment: data.qty } },
+      // Restocked B.O. goods form their own cost layer at the cost they were logged at,
+      // for the same reason receiving no longer merges: a returned unit carries the cost
+      // of its original delivery, not an average.
+      const baseLotNum = `BO-${data.poId}`;
+      let lotNum = baseLotNum;
+      for (let seq = 2; ; seq++) {
+        const clash = await tx.lot.findFirst({
+          where: { lotNumber: lotNum, skuId: data.skuId, warehouseId: data.warehouseId },
+          select: { id: true },
         });
-      } else {
-        await tx.lot.create({
-          data: {
-            lotNumber: lotNum,
-            skuId: data.skuId,
-            warehouseId: data.warehouseId,
-            receivedQty: data.qty,
-            remainingQty: data.qty,
-            poId: data.poId,
-          },
-        });
+        if (!clash) break;
+        lotNum = `${baseLotNum}-${seq}`;
       }
+
+      await tx.lot.create({
+        data: {
+          lotNumber: lotNum,
+          skuId: data.skuId,
+          warehouseId: data.warehouseId,
+          receivedQty: data.qty,
+          remainingQty: data.qty,
+          unitCost: data.costPerUnit,
+          receivedAt: new Date(),
+          poId: data.poId,
+        },
+      });
     } else {
       // BAD: write off the cost — never enters sellable inventory
-      const invAccount = INVENTORY_ACCOUNT_BY_WAREHOUSE_CODE[line.po.warehouse.code];
-      if (!invAccount) throw new Error(`No inventory GL account configured for warehouse ${line.po.warehouse.code}`);
+      const invAccount = inventoryAccountFor(line.po.warehouse.code);
 
       const amount = Math.round(data.qty * data.costPerUnit * 100) / 100;
       if (amount > 0) {

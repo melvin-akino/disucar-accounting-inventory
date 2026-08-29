@@ -86,6 +86,80 @@ export interface LotAllocation {
   take: number;
 }
 
+// ── FIFO lot selection ────────────────────────────────────────────────────────
+
+export interface CostedLotInput {
+  id: string;
+  remainingQty: number;
+  unitCost: number;
+  receivedAt: Date;
+}
+
+export interface CostedLotAllocation {
+  lotId: string;
+  take: number;
+  unitCost: number;
+  costTotal: number;
+}
+
+/** Round to centavos. Costing must not carry float dust into the ledger. */
+function toCentavos(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
+/**
+ * Select lots using First-In-First-Out and cost each slice at the lot's own unit cost.
+ *
+ * This is the default for construction materials, where cost moves per delivery but
+ * nothing expires — FEFO (`selectLotsFefo`) degenerates to arbitrary order there because
+ * every expiryDate is null. One order line legitimately spans several lots: 15 bags drawn
+ * from a 10-bag layer at 200.00 and a later layer at 205.00 costs 3,025.00, not 15 x 205.
+ *
+ * Ties on receivedAt break by id so allocation is deterministic and reproducible.
+ * Throws if the open layers cannot satisfy neededQty.
+ */
+export function selectLotsFifo(
+  lots: CostedLotInput[],
+  neededQty: number
+): CostedLotAllocation[] {
+  if (neededQty <= 0) return [];
+
+  const sorted = [...lots]
+    .filter((l) => l.remainingQty > 0)
+    .sort((a, b) => {
+      const diff = a.receivedAt.getTime() - b.receivedAt.getTime();
+      return diff !== 0 ? diff : a.id.localeCompare(b.id);
+    });
+
+  const allocations: CostedLotAllocation[] = [];
+  let remaining = neededQty;
+
+  for (const lot of sorted) {
+    if (remaining <= 0) break;
+    const take = Math.min(lot.remainingQty, remaining);
+    allocations.push({
+      lotId: lot.id,
+      take,
+      unitCost: lot.unitCost,
+      costTotal: toCentavos(take * lot.unitCost),
+    });
+    remaining -= take;
+  }
+
+  if (remaining > 0) {
+    throw new Error(
+      `Insufficient lot stock: needed ${neededQty}, available ${neededQty - remaining}`
+    );
+  }
+
+  return allocations;
+}
+
+/** Total cost of a set of allocations — the amount debited to COGS. */
+export function totalAllocationCost(allocations: CostedLotAllocation[]): number {
+  return toCentavos(allocations.reduce((sum, a) => sum + a.costTotal, 0));
+}
+
 /**
  * Select lots using First-Expiry-First-Out (FEFO).
  * Lots with no expiry are consumed last.

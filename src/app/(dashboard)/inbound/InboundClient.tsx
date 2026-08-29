@@ -7,7 +7,7 @@ import { HelpButton } from "@/components/HelpButton";
 import { createPO, updatePOStatus, receivePO, generateReorderPOs, logBackorder, closePO } from "./actions";
 import { linkBillToPO } from "../ledger/actions";
 
-interface PoLine { id: string; skuId: string; skuCode: string; skuName: string; unit: string; qty: number; accepted: number; damaged: number }
+interface PoLine { id: string; skuId: string; skuCode: string; skuName: string; unit: string; qty: number; unitCost: number; accepted: number; damaged: number }
 interface BackorderRow {
   id: string; poLineId: string; skuId: string; qty: number; costPerUnit: string;
   disposition: "GOOD" | "BAD"; badReasonType: string | null; badReasonNote: string | null;
@@ -159,6 +159,10 @@ function ReceiveModal({ po, onClose }: { po: PoRow; onClose: () => void }) {
   const [lineData, setLineData] = useState(po.lines.map(l => ({
     lineId: l.id, skuId: l.skuId, accepted: l.qty, damaged: 0,
     lotNumber: "", expiryDate: "",
+    // Defaults to the PO's agreed cost; the warehouse overrides it when the delivery
+    // lands at a different price. Whatever is confirmed here becomes this lot's cost
+    // and follows the goods through FIFO into COGS.
+    unitCost: l.unitCost,
   })));
   const [err, setErr] = useState("");
 
@@ -177,6 +181,7 @@ function ReceiveModal({ po, onClose }: { po: PoRow; onClose: () => void }) {
             accepted: l.accepted, damaged: l.damaged,
             lotNumber: l.lotNumber || undefined,
             expiryDate: l.expiryDate || undefined,
+            unitCost: l.unitCost,
           })),
         });
         router.refresh(); onClose();
@@ -195,7 +200,7 @@ function ReceiveModal({ po, onClose }: { po: PoRow; onClose: () => void }) {
             <div key={l.id} style={{ padding: "12px 14px", borderRadius: 8, background: "oklch(var(--bg-2))", border: "1px solid oklch(var(--line))" }}>
               <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 2 }}>{l.skuName}</div>
               <div style={{ fontSize: 11.5, color: "oklch(var(--ink-3))", marginBottom: 10 }}>{l.skuCode} · ordered {l.qty} {l.unit}</div>
-              <div style={{ display: "grid", gridTemplateColumns: "90px 90px 1fr 140px", gap: 8 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "90px 90px 110px 1fr 140px", gap: 8 }}>
                 <div>
                   <label style={{ fontSize: 11, fontWeight: 600, color: "oklch(var(--ink-3))", display: "block", marginBottom: 3 }}>Accepted</label>
                   <input type="number" className="field-input" min="0" max={l.qty} step="1" style={{ textAlign: "center" }}
@@ -205,6 +210,11 @@ function ReceiveModal({ po, onClose }: { po: PoRow; onClose: () => void }) {
                   <label style={{ fontSize: 11, fontWeight: 600, color: "oklch(var(--ink-3))", display: "block", marginBottom: 3 }}>Damaged</label>
                   <input type="number" className="field-input" min="0" max={l.qty} step="1" style={{ textAlign: "center" }}
                     value={lineData[i].damaged} onChange={e => setVal(i, "damaged", parseInt(e.target.value) || 0)} />
+                </div>
+                <div>
+                  <label style={{ fontSize: 11, fontWeight: 600, color: "oklch(var(--ink-3))", display: "block", marginBottom: 3 }}>Unit Cost</label>
+                  <input type="number" className="field-input" min="0" step="0.0001" style={{ textAlign: "right" }}
+                    value={lineData[i].unitCost} onChange={e => setVal(i, "unitCost", parseFloat(e.target.value) || 0)} />
                 </div>
                 <div>
                   <label style={{ fontSize: 11, fontWeight: 600, color: "oklch(var(--ink-3))", display: "block", marginBottom: 3 }}>Lot / Batch No.</label>
