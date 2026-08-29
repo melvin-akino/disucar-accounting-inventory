@@ -1,3 +1,4 @@
+import { num } from "@/lib/utils";
 import { getServerSession } from "next-auth";
 import { redirect } from "next/navigation";
 import { authOptions } from "@/lib/auth";
@@ -146,15 +147,15 @@ export default async function PrintReportPage({ searchParams }: Props) {
         <thead><tr><th style={hd}>SKU</th><th style={hd}>Product</th><th style={hd}>Warehouse</th><th style={hdR}>On Hand</th><th style={hdR}>Reserved</th><th style={hdR}>Available</th><th style={hdR}>Reorder At</th><th style={hd}>Status</th></tr></thead>
         <tbody>
           {stocks.map((s) => {
-            const avail = s.onHand - s.reserved;
-            const low = s.reorderAt != null && s.onHand <= s.reorderAt;
+            const avail = num(s.onHand) - num(s.reserved);
+            const low = s.reorderAt != null && num(s.onHand) <= s.reorderAt;
             return (
               <tr key={s.id}>
                 <td style={cell}>{s.sku.sku}</td>
                 <td style={cell}>{s.sku.name}</td>
                 <td style={cell}>{s.warehouse.name}</td>
-                <td style={cellR}>{s.onHand}</td>
-                <td style={cellR}>{s.reserved}</td>
+                <td style={cellR}>{num(s.onHand)}</td>
+                <td style={cellR}>{num(s.reserved)}</td>
                 <td style={{ ...cellR, color: low ? "#c00" : "#111" }}>{avail}</td>
                 <td style={cellR}>{s.reorderAt ?? "—"}</td>
                 <td style={{ ...cell, color: low ? "#c00" : "#080" }}>{low ? "LOW STOCK" : "OK"}</td>
@@ -221,7 +222,7 @@ export default async function PrintReportPage({ searchParams }: Props) {
         name: l.sku.name,
         warehouse: l.warehouse.name,
         expiryDate: exp.toLocaleDateString("en-PH"),
-        remainingQty: l.remainingQty,
+        remainingQty: num(l.remainingQty),
         daysLeft,
         status: l.status,
       };
@@ -241,7 +242,7 @@ export default async function PrintReportPage({ searchParams }: Props) {
                 <td style={cell}>{r.name}</td>
                 <td style={cell}>{r.warehouse}</td>
                 <td style={{ ...cell, color: r.daysLeft <= 30 ? "#c00" : "#111" }}>{r.expiryDate}</td>
-                <td style={cellR}>{r.remainingQty.toLocaleString()}</td>
+                <td style={cellR}>{num(r.remainingQty).toLocaleString()}</td>
                 <td style={{ ...cellR, color: riskColor }}>{r.daysLeft}d</td>
                 <td style={{ ...cell, color: riskColor, fontWeight: 600 }}>{risk}</td>
               </tr>
@@ -251,7 +252,7 @@ export default async function PrintReportPage({ searchParams }: Props) {
         <tfoot>
           <tr style={{ fontWeight: 700 }}>
             <td style={hd} colSpan={5}>Total</td>
-            <td style={hdR}>{rows.reduce((s, r) => s + r.remainingQty, 0).toLocaleString()}</td>
+            <td style={hdR}>{rows.reduce((s, r) => s + num(r.remainingQty), 0).toLocaleString()}</td>
             <td style={hd} colSpan={2} />
           </tr>
         </tfoot>
@@ -295,7 +296,7 @@ export default async function PrintReportPage({ searchParams }: Props) {
         orderId: oll.orderLine.order.id,
         customer: oll.orderLine.order.customer.name,
         deliveredAt: deliveredEvent ? new Date(deliveredEvent.createdAt).toLocaleDateString("en-PH") : null,
-        qtyTaken: oll.qtyTaken,
+        qtyTaken: num(oll.qtyTaken),
       };
     });
 
@@ -313,7 +314,7 @@ export default async function PrintReportPage({ searchParams }: Props) {
               <td style={cell}>{r.customer}</td>
               <td style={cell}>{r.deliveredAt ?? "—"}</td>
               <td style={cell}>{r.expiryDate ?? "—"}</td>
-              <td style={cellR}>{r.qtyTaken}</td>
+              <td style={cellR}>{num(r.qtyTaken)}</td>
             </tr>
           ))}
         </tbody>
@@ -341,8 +342,8 @@ export default async function PrintReportPage({ searchParams }: Props) {
         sku: l.sku.sku,
         name: l.sku.name,
         warehouse: l.warehouse.name,
-        receivedQty: l.receivedQty,
-        remainingQty: l.remainingQty,
+        receivedQty: num(l.receivedQty),
+        remainingQty: num(l.remainingQty),
         expiryDate: exp ? exp.toLocaleDateString("en-PH") : null,
         daysLeft,
         status: l.status,
@@ -361,8 +362,8 @@ export default async function PrintReportPage({ searchParams }: Props) {
                 <td style={cell}>{r.sku}</td>
                 <td style={cell}>{r.name}</td>
                 <td style={cell}>{r.warehouse}</td>
-                <td style={cellR}>{r.receivedQty.toLocaleString()}</td>
-                <td style={cellR}>{r.remainingQty.toLocaleString()}</td>
+                <td style={cellR}>{num(r.receivedQty).toLocaleString()}</td>
+                <td style={cellR}>{num(r.remainingQty).toLocaleString()}</td>
                 <td style={{ ...cell, color: isCritical ? "#c00" : "#111" }}>{r.expiryDate ?? "—"}</td>
                 <td style={{ ...cellR, color: isCritical ? "#c00" : "#111" }}>{r.daysLeft !== null ? `${r.daysLeft}d` : "—"}</td>
                 <td style={{ ...cell, color: r.status === "ACTIVE" ? "#080" : "#888" }}>{r.status}</td>
@@ -373,8 +374,8 @@ export default async function PrintReportPage({ searchParams }: Props) {
         <tfoot>
           <tr style={{ fontWeight: 700 }}>
             <td style={hd} colSpan={4}>Total</td>
-            <td style={hdR}>{rows.reduce((s, r) => s + r.receivedQty, 0).toLocaleString()}</td>
-            <td style={hdR}>{rows.reduce((s, r) => s + r.remainingQty, 0).toLocaleString()}</td>
+            <td style={hdR}>{rows.reduce((s, r) => s + num(r.receivedQty), 0).toLocaleString()}</td>
+            <td style={hdR}>{rows.reduce((s, r) => s + num(r.remainingQty), 0).toLocaleString()}</td>
             <td style={hd} colSpan={3} />
           </tr>
         </tfoot>

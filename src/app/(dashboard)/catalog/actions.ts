@@ -1,5 +1,6 @@
 "use server";
 
+import { validateVessel } from "@/lib/bulk";
 import { revalidatePath } from "next/cache";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
@@ -23,7 +24,13 @@ const CatalogSchema = z.object({
   unitPrice: z.number().positive(),
   // Null = not sold wholesale. An empty field must clear the price, not keep the old one.
   wholesalePrice: z.number().positive().optional().nullable(),
-  wholesaleMinQty: z.number().int().positive().optional().nullable(),
+  wholesaleMinQty: z.number().positive().optional().nullable(),
+  itemKind: z.enum(["PACKAGED", "BULK", "BULK_VESSEL"]).default("PACKAGED"),
+  bulkSourceId: z.string().optional().nullable(),
+  bulkVolumeM3: z.number().positive().optional().nullable(),
+  lengthM: z.number().positive().optional().nullable(),
+  widthM: z.number().positive().optional().nullable(),
+  heightM: z.number().positive().optional().nullable(),
   brand: z.string().optional(),
   imageUrl: z.string().optional().nullable(),
   supplierId: z.string().optional().nullable(),
@@ -34,6 +41,14 @@ const CatalogSchema = z.object({
 export async function createCatalogItem(input: z.infer<typeof CatalogSchema>) {
   await requireAccess();
   const data = CatalogSchema.parse(input);
+
+  // A truck size with no pile behind it would silently sell nothing.
+  const vessel = validateVessel({
+    itemKind: data.itemKind,
+    bulkSourceId: data.bulkSourceId ?? null,
+    bulkVolumeM3: data.bulkVolumeM3 ?? null,
+  });
+  if (!vessel.ok) throw new Error(vessel.error);
 
   const existing = await prisma.catalogItem.findUnique({ where: { sku: data.sku } });
   if (existing) throw new Error(`SKU "${data.sku}" already exists`);
@@ -48,6 +63,12 @@ export async function createCatalogItem(input: z.infer<typeof CatalogSchema>) {
       unitPrice: data.unitPrice,
       wholesalePrice: data.wholesalePrice ?? null,
       wholesaleMinQty: data.wholesaleMinQty ?? null,
+      itemKind: data.itemKind,
+      bulkSourceId: data.itemKind === "BULK_VESSEL" ? data.bulkSourceId ?? null : null,
+      bulkVolumeM3: data.itemKind === "BULK_VESSEL" ? data.bulkVolumeM3 ?? null : null,
+      lengthM: data.lengthM ?? null,
+      widthM: data.widthM ?? null,
+      heightM: data.heightM ?? null,
       brand: data.brand || null,
       imageUrl: data.imageUrl || null,
       supplierId: data.supplierId || null,
@@ -62,6 +83,14 @@ export async function createCatalogItem(input: z.infer<typeof CatalogSchema>) {
 export async function updateCatalogItem(id: string, input: z.infer<typeof CatalogSchema>) {
   await requireAccess();
   const data = CatalogSchema.parse(input);
+
+  // A truck size with no pile behind it would silently sell nothing.
+  const vessel = validateVessel({
+    itemKind: data.itemKind,
+    bulkSourceId: data.bulkSourceId ?? null,
+    bulkVolumeM3: data.bulkVolumeM3 ?? null,
+  });
+  if (!vessel.ok) throw new Error(vessel.error);
 
   const existing = await prisma.catalogItem.findFirst({
     where: { sku: data.sku, NOT: { id } },
@@ -82,6 +111,12 @@ export async function updateCatalogItem(id: string, input: z.infer<typeof Catalo
       unitPrice: data.unitPrice,
       wholesalePrice: data.wholesalePrice ?? null,
       wholesaleMinQty: data.wholesaleMinQty ?? null,
+      itemKind: data.itemKind,
+      bulkSourceId: data.itemKind === "BULK_VESSEL" ? data.bulkSourceId ?? null : null,
+      bulkVolumeM3: data.itemKind === "BULK_VESSEL" ? data.bulkVolumeM3 ?? null : null,
+      lengthM: data.lengthM ?? null,
+      widthM: data.widthM ?? null,
+      heightM: data.heightM ?? null,
       brand: data.brand || null,
       imageUrl: data.imageUrl || null,
       supplierId: data.supplierId || null,

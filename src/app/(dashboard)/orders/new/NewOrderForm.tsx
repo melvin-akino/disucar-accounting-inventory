@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { createOrder, getCustomerCredit, getAvailableLots, type AvailableLot } from "../actions";
 import { useToast } from "@/components/ui/Toast";
 import { peso, orderTotal } from "@/lib/utils";
+import { describeVessel } from "@/lib/bulk";
 import type { Customer, CatalogItem, Warehouse } from "@prisma/client";
 import type { CreditStatus } from "@/lib/credit";
 
@@ -150,11 +151,11 @@ function LotPicker({
             {peso(r.unitCost)} · {r.remainingQty} left
           </span>
           <input
-            type="number" className="field-input" min={0} max={r.remainingQty} step={1}
+            type="number" className="field-input" min={0} max={r.remainingQty} step={0.001}
             style={{ textAlign: "right", padding: "2px 4px", fontSize: 11.5 }}
             value={plan[r.id] ?? 0}
             onChange={e => {
-              const v = parseInt(e.target.value, 10) || 0;
+              const v = parseFloat(e.target.value) || 0;
               const next = { ...plan };
               if (v > 0) next[r.id] = v; else delete next[r.id];
               onChange(next);
@@ -400,7 +401,20 @@ export function NewOrderForm({ customers, catalog, warehouses, fixedCustomerId, 
                   <td>
                     <select className="field-input" value={line.skuId} onChange={e => updateLine(i, "skuId", e.target.value)} required>
                       <option value="">Select product…</option>
-                      {catalog.map(c => <option key={c.id} value={c.id}>{c.name} ({c.sku})</option>)}
+                      {catalog.map(c => (
+                        <option key={c.id} value={c.id}>
+                          {c.itemKind === "BULK_VESSEL"
+                            ? `${describeVessel({
+                                id: c.id, name: c.name, itemKind: c.itemKind,
+                                bulkSourceId: c.bulkSourceId,
+                                bulkVolumeM3: c.bulkVolumeM3 === null ? null : Number(c.bulkVolumeM3),
+                                lengthM: c.lengthM === null ? null : Number(c.lengthM),
+                                widthM: c.widthM === null ? null : Number(c.widthM),
+                                heightM: c.heightM === null ? null : Number(c.heightM),
+                              })} (${c.sku})`
+                            : `${c.name} (${c.sku})`}
+                        </option>
+                      ))}
                     </select>
                     {line.skuId && (
                       <div style={{ marginTop: 5 }}>

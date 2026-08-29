@@ -1,3 +1,4 @@
+import { num } from "@/lib/utils";
 import { NextRequest } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
@@ -34,9 +35,9 @@ export async function GET(req: NextRequest) {
     "Category": s.sku.category,
     "Unit": s.sku.unit,
     "Warehouse": s.warehouse.name,
-    "On Hand": s.onHand,
-    "Reserved": s.reserved,
-    "Available": s.onHand - s.reserved,
+    "On Hand": num(s.onHand),
+    "Reserved": num(s.reserved),
+    "Available": num(s.onHand) - num(s.reserved),
     "Reorder At": s.reorderAt ?? "",
     "Max Level": s.maxLevel ?? "",
   }));

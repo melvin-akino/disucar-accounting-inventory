@@ -1,3 +1,4 @@
+import { num } from "@/lib/utils";
 import { getServerSession } from "next-auth";
 import { redirect } from "next/navigation";
 import { authOptions } from "@/lib/auth";
@@ -30,7 +31,13 @@ export default async function CatalogPage() {
     unitsPerCase: i.unitsPerCase,
     unitPrice: i.unitPrice.toString(),
     wholesalePrice: i.wholesalePrice ? i.wholesalePrice.toString() : null,
-    wholesaleMinQty: i.wholesaleMinQty,
+    wholesaleMinQty: i.wholesaleMinQty === null ? null : num(i.wholesaleMinQty),
+    itemKind: i.itemKind,
+    bulkSourceId: i.bulkSourceId,
+    bulkVolumeM3: i.bulkVolumeM3 === null ? null : num(i.bulkVolumeM3),
+    lengthM: i.lengthM === null ? null : num(i.lengthM),
+    widthM: i.widthM === null ? null : num(i.widthM),
+    heightM: i.heightM === null ? null : num(i.heightM),
     brand: i.brand,
     imageUrl: i.imageUrl,
     active: i.active,

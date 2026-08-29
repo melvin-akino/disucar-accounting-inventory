@@ -1,5 +1,6 @@
 "use server";
 
+import { num } from "@/lib/utils";
 import { revalidatePath } from "next/cache";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
@@ -26,7 +27,8 @@ export async function receiveStock(input: {
   const session = await requireAccess();
   const { stockId, qty, costPerUnit, ref, note } = z.object({
     stockId: z.string(),
-    qty: z.number().int().positive(),
+    // Fractional for stockpile material measured in cubic metres.
+    qty: z.number().positive(),
     costPerUnit: z.number().min(0).optional(),
     ref: z.string().optional(),
     note: z.string().optional(),
@@ -65,14 +67,14 @@ export async function adjustStock(input: {
   const session = await requireAccess();
   const { stockId, delta, note } = z.object({
     stockId: z.string(),
-    delta: z.number().int(),
+    delta: z.number(),
     note: z.string().min(1, "Note is required for adjustments"),
   }).parse(input);
 
   if (delta === 0) throw new Error("Delta cannot be zero");
 
   const stock = await prisma.stock.findUniqueOrThrow({ where: { id: stockId } });
-  if (stock.onHand + delta < 0) throw new Error("Adjustment would result in negative stock");
+  if (num(stock.onHand) + delta < 0) throw new Error("Adjustment would result in negative stock");
 
   await prisma.$transaction([
     prisma.stockMove.create({
@@ -140,14 +142,14 @@ export async function transferStock(input: {
   const { stockId, toWarehouseId, qty, note } = z.object({
     stockId:       z.string(),
     toWarehouseId: z.string(),
-    qty:           z.number().int().positive(),
+    qty:           z.number().positive(),
     note:          z.string().optional(),
   }).parse(input);
 
   const from = await prisma.stock.findUniqueOrThrow({ where: { id: stockId } });
   if (from.warehouseId === toWarehouseId) throw new Error("Source and destination warehouse must be different");
 
-  const available = from.onHand - from.reserved;
+  const available = num(from.onHand) - num(from.reserved);
   if (available < qty) throw new Error(`Only ${available} units available (on hand minus reserved)`);
 
   await prisma.$transaction(async tx => {
@@ -191,7 +193,7 @@ export async function quarantineLot(lotId: string, note: string) {
 
   const lot = await prisma.lot.findUniqueOrThrow({ where: { id: lotId } });
   if (lot.status !== "ACTIVE") throw new Error("Only ACTIVE lots can be quarantined");
-  if (lot.remainingQty <= 0) throw new Error("Lot has no remaining quantity");
+  if (num(lot.remainingQty) <= 0) throw new Error("Lot has no remaining quantity");
 
   await prisma.$transaction([
     prisma.lot.update({
@@ -239,11 +241,14 @@ export async function writeOffLot(lotId: string, note: string) {
   });
 
   if (lot.status === "WRITTEN_OFF") throw new Error("Lot is already written off");
-  if (lot.remainingQty <= 0) throw new Error("Lot has no remaining quantity to write off");
+  if (num(lot.remainingQty) <= 0) throw new Error("Lot has no remaining quantity to write off");
 
-  const qty           = lot.remainingQty;
-  const unitPrice     = Number(lot.sku.unitPrice);
-  const lossValue     = Math.round(qty * unitPrice * 100) / 100;
+  // Valued at the lot's own cost, not the selling price. Writing off at retail credited
+  // the inventory asset for more than it was ever debited, overstating the loss by the
+  // margin. The lot's cost is what the goods were carried at (Phase 1).
+  const qty           = num(lot.remainingQty);
+  const unitCost      = num(lot.unitCost);
+  const lossValue     = Math.round(qty * unitCost * 100) / 100;
   const wasQuarantined = lot.status === "QUARANTINED";
   const jeId          = await nextCode("JE", (since) => prisma.journalEntry.count({ where: { createdAt: { gte: since } } }));
 

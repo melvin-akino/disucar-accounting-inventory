@@ -1,3 +1,4 @@
+import { num } from "@/lib/utils";
 import { getServerSession } from "next-auth";
 import { redirect } from "next/navigation";
 import { authOptions } from "@/lib/auth";
@@ -339,16 +340,16 @@ export default async function ReportsPage({ searchParams }: Props) {
     });
 
     const rows: InventoryRow[] = stocks.map((s) => {
-      const available = s.onHand - s.reserved;
-      const belowReorder = s.reorderAt != null && s.onHand <= s.reorderAt;
+      const available = num(s.onHand) - num(s.reserved);
+      const belowReorder = s.reorderAt != null && num(s.onHand) <= s.reorderAt;
       return {
         sku: s.sku.sku,
         name: s.sku.name,
         category: s.sku.category,
         unit: s.sku.unit,
         warehouse: s.warehouse.name,
-        onHand: s.onHand,
-        reserved: s.reserved,
+        onHand: num(s.onHand),
+        reserved: num(s.reserved),
         available,
         reorderAt: s.reorderAt,
         belowReorder,
@@ -451,7 +452,7 @@ export default async function ReportsPage({ searchParams }: Props) {
         name: l.sku.name,
         warehouse: l.warehouse.name,
         expiryDate: exp.toLocaleDateString("en-PH"),
-        remainingQty: l.remainingQty,
+        remainingQty: num(l.remainingQty),
         daysLeft,
         status: l.status,
       };
@@ -509,7 +510,7 @@ export default async function ReportsPage({ searchParams }: Props) {
         orderId: oll.orderLine.order.id,
         customer: oll.orderLine.order.customer.name,
         deliveredAt: deliveredEvent ? new Date(deliveredEvent.createdAt).toLocaleDateString("en-PH") : null,
-        qtyTaken: oll.qtyTaken,
+        qtyTaken: num(oll.qtyTaken),
       };
     });
 
@@ -536,8 +537,8 @@ export default async function ReportsPage({ searchParams }: Props) {
         sku: l.sku.sku,
         name: l.sku.name,
         warehouse: l.warehouse.name,
-        receivedQty: l.receivedQty,
-        remainingQty: l.remainingQty,
+        receivedQty: num(l.receivedQty),
+        remainingQty: num(l.remainingQty),
         expiryDate: exp ? exp.toLocaleDateString("en-PH") : null,
         daysLeft,
         status: l.status,

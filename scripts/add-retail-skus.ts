@@ -1,3 +1,4 @@
+import { num } from "@/lib/utils";
 /**
  * One-off: create a per-piece (retail) SKU for every case-level catalog item.
  *
@@ -61,9 +62,9 @@ async function main() {
       // Copy case stock into the retail SKU for every warehouse it stocks.
       for (const s of item.stockRows) {
         await tx.stock.create({
-          data: { skuId: retail.id, warehouseId: s.warehouseId, onHand: s.onHand, reserved: 0 },
+          data: { skuId: retail.id, warehouseId: s.warehouseId, onHand: num(s.onHand), reserved: 0 },
         });
-        if (s.onHand > 0) {
+        if (num(s.onHand) > 0) {
           await tx.stockMove.create({
             data: {
               skuId: retail.id, warehouseId: s.warehouseId, type: "RECEIPT",

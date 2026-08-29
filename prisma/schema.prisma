@@ -164,11 +164,35 @@ model Category {
   @@map("categories")
 }
 
+// How a catalog item is measured and stocked.
+//
+// PACKAGED    — discrete units: bags of cement, lengths of rebar, sheets of plywood.
+// BULK        — stockpile material measured by volume: sand, gravel, 3/4 crush. Received
+//               by the truckload (18 m3 at a total cost), held and costed per m3.
+// BULK_VESSEL — a sellable truck size (a "mini-truck"). Carries no stock of its own: it
+//               draws bulkVolumeM3 per unit from the BULK material named by bulkSourceId.
+//               Selling 3 mini-trucks is qty 3 on one line, drawing 3 x volume m3 from
+//               the pile by FIFO. The customer buys trucks; inventory sees cubic metres.
+enum ItemKind {
+  PACKAGED
+  BULK
+  BULK_VESSEL
+}
+
 model CatalogItem {
   id         String       @id @default(cuid())
   sku        String       @unique
   name       String
   category   String       @default("OTHER")
+  itemKind   ItemKind     @default(PACKAGED)
+  // BULK_VESSEL only: the stockpile material this vessel draws from, and the dimensions
+  // that define its capacity. Volume is stored rather than derived so a truck whose usable
+  // capacity differs from its raw L x W x H can be corrected without faking a dimension.
+  bulkSourceId  String?
+  bulkVolumeM3  Decimal? @db.Decimal(10, 3)
+  lengthM       Decimal? @db.Decimal(8, 3)
+  widthM        Decimal? @db.Decimal(8, 3)
+  heightM       Decimal? @db.Decimal(8, 3)
   // Trading unit. Disucar sells by the case, so this is normally "case" and every quantity
   // in the system (stock, order lines, PO lines, lots) is denominated in it.
   unit       String       @default("pc")
@@ -183,7 +207,7 @@ model CatalogItem {
   wholesalePrice Decimal? @db.Decimal(12, 2)
   // Minimum quantity of this SKU per line on a wholesale order. Null falls back to
   // OrgSettings.wholesaleDefaultMinQty.
-  wholesaleMinQty Int?
+  wholesaleMinQty Decimal? @db.Decimal(14, 3)
   brand      String?
   imageUrl   String?
   active     Boolean      @default(true)
@@ -198,6 +222,8 @@ model CatalogItem {
   supplier      Supplier?       @relation(fields: [supplierId], references: [id])
   parent        CatalogItem?    @relation("CaseToPiece", fields: [parentId], references: [id])
   variants      CatalogItem[]   @relation("CaseToPiece")
+  bulkSource    CatalogItem?    @relation("VesselToBulk", fields: [bulkSourceId], references: [id])
+  vessels       CatalogItem[]   @relation("VesselToBulk")
   orderLines    OrderLine[]
   stockRows     Stock[]
   stockMoves    StockMove[]
@@ -304,7 +330,7 @@ model OrderLine {
   skuId     String
   name      String
   unit      String
-  qty       Int
+  qty       Decimal @db.Decimal(14, 3)
   unitPrice Decimal @db.Decimal(12, 2)
   lineTotal Decimal @db.Decimal(12, 2)
   // Discount % applied to this line by Finance/Admin on the order view (blanket customer %
@@ -455,8 +481,8 @@ model Stock {
   id          String   @id @default(cuid())
   skuId       String
   warehouseId String
-  onHand      Int      @default(0)
-  reserved    Int      @default(0)
+  onHand      Decimal  @default(0) @db.Decimal(14, 3)
+  reserved    Decimal  @default(0) @db.Decimal(14, 3)
   reorderAt   Int?
   maxLevel    Int?
   updatedAt   DateTime @updatedAt
@@ -481,7 +507,7 @@ model StockMove {
   skuId       String
   warehouseId String
   type        MoveType
-  qty         Int
+  qty         Decimal  @db.Decimal(14, 3)
   costPerUnit Decimal  @db.Decimal(12, 2) @default(0)
   ref         String?
   note        String?
@@ -529,13 +555,13 @@ model InboundPOLine {
   id       String  @id @default(cuid())
   poId     String
   skuId    String
-  qty      Int
+  qty      Decimal @db.Decimal(14, 3)
   // Agreed cost per unit for this PO line. Previously collected on the create-PO form,
   // used to compute InboundPO.total and then discarded; it is now persisted because it
   // seeds Lot.unitCost when the PO is received.
   unitCost Decimal @default(0) @db.Decimal(12, 4)
-  accepted Int     @default(0)
-  damaged  Int     @default(0)
+  accepted Decimal @default(0) @db.Decimal(14, 3)
+  damaged  Decimal @default(0) @db.Decimal(14, 3)
 
   po         InboundPO         @relation(fields: [poId],  references: [id], onDelete: Cascade)
   sku        CatalogItem       @relation(fields: [skuId], references: [id])
@@ -566,7 +592,7 @@ model BackorderReturn {
   poLineId      String
   skuId         String
   warehouseId   String
-  qty           Int
+  qty           Decimal @db.Decimal(14, 3)
   costPerUnit   Decimal       @db.Decimal(12, 2)
   disposition   BoDisposition
   badReasonType BoReasonType?
@@ -611,7 +637,7 @@ model TransferLine {
   id         String   @id @default(cuid())
   transferId String
   skuId      String
-  qty        Int
+  qty        Decimal @db.Decimal(14, 3)
 
   transfer   Transfer @relation(fields: [transferId], references: [id], onDelete: Cascade)
 
@@ -836,7 +862,7 @@ model QuotationLine {
   skuId       String
   name        String
   unit        String
-  qty         Int
+  qty         Decimal  @db.Decimal(14, 3)
   unitPrice   Decimal   @db.Decimal(12, 2)
   lineTotal   Decimal   @db.Decimal(12, 2)
 
@@ -883,8 +909,8 @@ model ReturnLine {
   returnId         String
   skuId            String
   name             String
-  qtyRequested     Int
-  qtyReceived      Int         @default(0)
+  qtyRequested     Decimal     @db.Decimal(14, 3)
+  qtyReceived      Decimal     @default(0) @db.Decimal(14, 3)
   disposition      Disposition @default(RESTOCK)
   returnLotNumber  String?
   returnExpiryDate DateTime?
@@ -908,8 +934,8 @@ model Lot {
   lotNumber      String
   skuId          String
   warehouseId    String
-  receivedQty    Int       @default(0)
-  remainingQty   Int       @default(0)
+  receivedQty    Decimal   @default(0) @db.Decimal(14, 3)
+  remainingQty   Decimal   @default(0) @db.Decimal(14, 3)
   // Landed cost of one unit in THIS receipt. Cost varies per delivery (cement at 200
   // today, 205 next week), so it is stored on the lot rather than on the SKU — this is
   // the layer FIFO consumes and what COGS is computed from. 4 dp absorbs the rounding
@@ -957,7 +983,7 @@ model OrgSettings {
   expiryCriticalDays Int     @default(30)
   // Wholesale thresholds. Per-SKU CatalogItem.wholesaleMinQty overrides the qty default;
   // the order floor applies to the whole order regardless of SKU mix.
-  wholesaleDefaultMinQty Int     @default(1)
+  wholesaleDefaultMinQty Decimal @default(1) @db.Decimal(14, 3)
   wholesaleMinOrderTotal Decimal @default(0) @db.Decimal(14, 2)
   allowedOfficeIps   String  @default("")
 
@@ -990,7 +1016,7 @@ model OrderLineLot {
   id          String   @id @default(cuid())
   orderLineId String
   lotId       String
-  qtyTaken    Int
+  qtyTaken    Decimal  @db.Decimal(14, 3)
   // Cost snapshot frozen at allocation time. Deliberately duplicated from Lot.unitCost:
   // a later correction to the lot must never retroactively rewrite a posted COGS entry.
   unitCost    Decimal  @default(0) @db.Decimal(12, 4)
@@ -1013,7 +1039,7 @@ model OrderLinePlannedLot {
   id          String   @id @default(cuid())
   orderLineId String
   lotId       String
-  qtyPlanned  Int
+  qtyPlanned  Decimal  @db.Decimal(14, 3)
   createdAt   DateTime @default(now())
 
   orderLine   OrderLine @relation(fields: [orderLineId], references: [id], onDelete: Cascade)

@@ -1,3 +1,4 @@
+import { num } from "@/lib/utils";
 import { getServerSession } from "next-auth";
 import { redirect, notFound } from "next/navigation";
 import { authOptions } from "@/lib/auth";
@@ -109,8 +110,8 @@ export default async function PrintDeliveryPage({ params }: { params: { id: stri
                 <div style={{ fontWeight: 500 }}>{line.name}</div>
               </td>
               <td style={cellC}>{line.unit}</td>
-              <td style={cellR}>{line.qty}</td>
-              <td style={{ ...cellR, borderRight: "2px solid #d1d5db" }}>{line.qty}</td>
+              <td style={cellR}>{num(line.qty)}</td>
+              <td style={{ ...cellR, borderRight: "2px solid #d1d5db" }}>{num(line.qty)}</td>
               <td style={{ ...cellC, background: "#fafafa" }}>
                 <div style={{ width: 14, height: 14, border: "1px solid #9ca3af", display: "inline-block", borderRadius: 2 }} />
               </td>

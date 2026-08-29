@@ -3,7 +3,7 @@ import { redirect } from "next/navigation";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { computeTrialBalance } from "@/lib/coa";
-import { getMorningWindow } from "@/lib/utils";
+import { getMorningWindow , num } from "@/lib/utils";
 import { DashboardClient } from "./DashboardClient";
 import type { Role } from "@prisma/client";
 
@@ -61,7 +61,7 @@ export default async function DashboardPage() {
     const arOverdue = invoiceSummary.filter(i => i.status === "OVERDUE").reduce((s, i) => s + Number(i.amount) - Number(i.paid), 0);
     const apOpen = billSummary.reduce((s, b) => s + Number(b.amount) - Number(b.paid), 0);
     const apOverdue = billSummary.filter(b => b.status === "OVERDUE").reduce((s, b) => s + Number(b.amount) - Number(b.paid), 0);
-    const lowStock = stockAlerts.filter(s => s.onHand <= (s.reorderAt ?? 0));
+    const lowStock = stockAlerts.filter(s => num(s.onHand) <= (s.reorderAt ?? 0));
 
     const morningCountByAgent = new Map(morningOrders.map(o => [o.agentId, o._count.agentId]));
     const morningActivity = activeAgents.map(a => ({
@@ -93,14 +93,14 @@ export default async function DashboardPage() {
         ap={{ open: apOpen, overdue: apOverdue }}
         birDue={birDue}
         lowStockCount={lowStock.length}
-        lowStockItems={lowStock.slice(0, 5).map(s => ({ name: s.sku.name, warehouse: s.warehouse.name, onHand: s.onHand, reorderAt: s.reorderAt! }))}
+        lowStockItems={lowStock.slice(0, 5).map(s => ({ name: s.sku.name, warehouse: s.warehouse.name, onHand: num(s.onHand), reorderAt: s.reorderAt! }))}
         trialBalance={tb}
         recentOrders={recentOrders.map(o => ({ id: o.id, state: o.state, customerName: o.customer.name, total: Number(o.total), createdAt: o.createdAt.toISOString() }))}
         recentJe={recentJe.map(j => ({ id: j.id, date: j.date.toISOString(), source: j.source, memo: j.memo, amount: j.lines.reduce((s, l) => s + Number(l.dr), 0) }))}
         monthlyTrend={monthlyTrend}
         nearExpiryLots={nearExpiryLots.map(l => ({
           id: l.id, lotNumber: l.lotNumber, skuName: l.sku.name,
-          warehouseName: l.warehouse.name, remainingQty: l.remainingQty,
+          warehouseName: l.warehouse.name, remainingQty: num(l.remainingQty),
           expiryDate: l.expiryDate!.toISOString(),
         }))}
         morningActivity={morningActivity}
@@ -184,7 +184,7 @@ export default async function DashboardPage() {
       }),
     ]);
 
-    const lowStock = stockAlerts.filter(s => s.onHand <= (s.reorderAt ?? 0));
+    const lowStock = stockAlerts.filter(s => num(s.onHand) <= (s.reorderAt ?? 0));
 
     return (
       <DashboardClient
@@ -193,11 +193,11 @@ export default async function DashboardPage() {
           state: s, count: orderCounts.find(o => o.state === s)?._count.state ?? 0,
         }))}
         lowStockCount={lowStock.length}
-        lowStockItems={lowStock.slice(0, 6).map(s => ({ name: s.sku.name, warehouse: s.warehouse.name, onHand: s.onHand, reorderAt: s.reorderAt! }))}
+        lowStockItems={lowStock.slice(0, 6).map(s => ({ name: s.sku.name, warehouse: s.warehouse.name, onHand: num(s.onHand), reorderAt: s.reorderAt! }))}
         recentOrders={recentOrders.map(o => ({ id: o.id, state: o.state, customerName: o.customer.name, total: Number(o.total), createdAt: o.createdAt.toISOString() }))}
         nearExpiryLots={nearExpiryLotsWh.map(l => ({
           id: l.id, lotNumber: l.lotNumber, skuName: l.sku.name,
-          warehouseName: l.warehouse.name, remainingQty: l.remainingQty,
+          warehouseName: l.warehouse.name, remainingQty: num(l.remainingQty),
           expiryDate: l.expiryDate!.toISOString(),
         }))}
       />

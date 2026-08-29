@@ -1,3 +1,4 @@
+import { num } from "@/lib/utils";
 import { prisma } from "@/lib/prisma";
 import { OrderPageClient } from "./OrderPageClient";
 
@@ -39,7 +40,7 @@ export default async function PublicOrderPage({ params }: Props) {
     where: { order: { createdAt: { gte: since }, state: { not: "CANCELLED" } } },
     _sum: { qty: true },
   });
-  const soldBySku = new Map(soldAgg.map((r) => [r.skuId, r._sum.qty ?? 0]));
+  const soldBySku = new Map(soldAgg.map((r) => [r.skuId, num(r._sum.qty) ?? 0]));
 
   const sorted = [...catalog].sort((a, b) => {
     const qa = soldBySku.get(a.id) ?? 0;

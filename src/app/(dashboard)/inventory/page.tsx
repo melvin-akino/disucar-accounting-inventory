@@ -1,3 +1,4 @@
+import { num } from "@/lib/utils";
 import { getServerSession } from "next-auth";
 import { redirect } from "next/navigation";
 import { authOptions } from "@/lib/auth";
@@ -37,8 +38,8 @@ export default async function InventoryPage() {
     skuSku: s.sku.sku,
     warehouseId: s.warehouseId,
     warehouseName: s.warehouse.name,
-    onHand: s.onHand,
-    reserved: s.reserved,
+    onHand: num(s.onHand),
+    reserved: num(s.reserved),
     reorderAt: s.reorderAt,
     maxLevel: s.maxLevel,
   }));
@@ -49,7 +50,7 @@ export default async function InventoryPage() {
     skuName: m.sku.name,
     warehouseName: m.warehouse.name,
     type: m.type,
-    qty: m.qty,
+    qty: num(m.qty),
     costPerUnit: m.costPerUnit.toString(),
     ref: m.ref,
     note: m.note,
@@ -65,8 +66,8 @@ export default async function InventoryPage() {
     unitPrice: Number(l.sku.unitPrice),
     warehouseName: l.warehouse.name,
     warehouseId: l.warehouseId,
-    receivedQty: l.receivedQty,
-    remainingQty: l.remainingQty,
+    receivedQty: num(l.receivedQty),
+    remainingQty: num(l.remainingQty),
     status: l.status as string,
     expiryDate: l.expiryDate?.toISOString() ?? null,
     quarantineNote: l.quarantineNote ?? null,

@@ -32,6 +32,29 @@ export function fmtDateTime(date: Date | string) {
 }
 
 // VAT / CWT helpers (Philippines)
+/**
+ * Coerce a Prisma Decimal (or string, or number) to a JS number.
+ *
+ * Quantities are Decimal(14,3) columns so stockpile material can be measured in cubic
+ * metres, which means Prisma hands back Decimal objects where plain numbers used to
+ * arrive. Arithmetic and formatting go through this.
+ *
+ * Safe for quantities and money at the magnitudes this system handles; it is a display
+ * and arithmetic convenience, not a substitute for Decimal in the columns themselves.
+ */
+export function num(v: number | string | { toNumber: () => number } | null | undefined): number {
+  if (v === null || v === undefined) return 0;
+  if (typeof v === "number") return v;
+  if (typeof v === "string") return parseFloat(v) || 0;
+  return v.toNumber();
+}
+
+/** Format a quantity: whole numbers stay clean, fractional volumes keep their precision. */
+export function qty(v: number | string | { toNumber: () => number } | null | undefined): string {
+  const n = num(v);
+  return Number.isInteger(n) ? String(n) : n.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
+}
+
 export function vatOf(subtotal: number, rate = 0.12) {
   return subtotal * rate;
 }

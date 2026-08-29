@@ -1,3 +1,4 @@
+import { num } from "@/lib/utils";
 import { getServerSession } from "next-auth";
 import { redirect, notFound } from "next/navigation";
 import { authOptions } from "@/lib/auth";
@@ -35,7 +36,7 @@ export default async function PrintPoPage({ params }: { params: { id: string } }
   const createdAt = new Date(po.createdAt).toLocaleDateString("en-PH", { year: "numeric", month: "long", day: "numeric" });
   const today = new Date().toLocaleDateString("en-PH", { year: "numeric", month: "long", day: "numeric" });
 
-  const subtotal = po.lines.reduce((s, l) => s + l.qty * Number(l.sku.unitPrice), 0);
+  const subtotal = po.lines.reduce((s, l) => s + num(l.qty) * Number(l.sku.unitPrice), 0);
   const vat = subtotal * 0.12;
   const grandTotal = Number(po.total);
 
@@ -99,20 +100,20 @@ export default async function PrintPoPage({ params }: { params: { id: string } }
         <tbody>
           {po.lines.map((line, i) => {
             const unitCost = Number(line.sku.unitPrice);
-            const lineTotal = line.qty * unitCost;
+            const lineTotal = num(line.qty) * unitCost;
             return (
               <tr key={line.id} style={{ background: i % 2 === 0 ? "#f9fafb" : "white" }}>
                 <td style={{ ...cell, color: "#9ca3af", fontSize: 11 }}>{i + 1}</td>
                 <td style={{ ...cell, fontFamily: "monospace", fontSize: 11 }}>{line.sku.sku}</td>
                 <td style={cell}>{line.sku.name}</td>
                 <td style={{ ...cell, textAlign: "center" }}>{line.sku.unit}</td>
-                <td style={cellR}>{line.qty}</td>
+                <td style={cellR}>{num(line.qty)}</td>
                 <td style={cellR}>{peso(unitCost)}</td>
                 <td style={cellR}>{peso(lineTotal)}</td>
                 <td style={{ ...cellR, background: "#fafafa" }}>
-                  {line.accepted > 0 ? (
-                    <span style={{ color: line.accepted === line.qty ? "#166534" : "#92400e" }}>
-                      {line.accepted}/{line.qty}
+                  {num(line.accepted) > 0 ? (
+                    <span style={{ color: num(line.accepted) === num(line.qty) ? "#166534" : "#92400e" }}>
+                      {num(line.accepted)}/{num(line.qty)}
                     </span>
                   ) : "—"}
                 </td>

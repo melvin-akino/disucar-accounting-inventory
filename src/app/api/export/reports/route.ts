@@ -1,3 +1,4 @@
+import { num } from "@/lib/utils";
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
@@ -80,9 +81,9 @@ export async function GET(req: NextRequest) {
     rows = [
       ["SKU", "Product", "Category", "Unit", "Warehouse", "On Hand", "Reserved", "Available", "Reorder At", "Status"],
       ...stocks.map(s => {
-        const available = s.onHand - s.reserved;
+        const available = num(s.onHand) - num(s.reserved);
         return [s.sku.sku, s.sku.name, s.sku.category, s.sku.unit, s.warehouse.name,
-          s.onHand, s.reserved, available, s.reorderAt ?? "", s.reorderAt && s.onHand <= s.reorderAt ? "Low" : available === 0 ? "Out" : "OK"];
+          num(s.onHand), num(s.reserved), available, s.reorderAt ?? "", s.reorderAt && num(s.onHand) <= s.reorderAt ? "Low" : available === 0 ? "Out" : "OK"];
       }),
     ];
   }

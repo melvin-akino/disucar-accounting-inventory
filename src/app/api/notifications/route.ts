@@ -1,3 +1,4 @@
+import { num } from "@/lib/utils";
 import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
@@ -26,7 +27,7 @@ export async function GET() {
 
   if (["WAREHOUSE", "ADMIN"].includes(role)) {
     const stocksWithReorder = await prisma.stock.findMany({ where: { reorderAt: { not: null } }, select: { onHand: true, reorderAt: true } });
-    const lowStock = stocksWithReorder.filter(s => s.onHand <= s.reorderAt!).length;
+    const lowStock = stocksWithReorder.filter(s => num(s.onHand) <= s.reorderAt!).length;
 
     const pendingApprovals = await prisma.order.count({ where: { state: "APPROVED" } });
     const expectedPOs = await prisma.inboundPO.count({ where: { status: "EXPECTED", expectedAt: { lte: now } } });

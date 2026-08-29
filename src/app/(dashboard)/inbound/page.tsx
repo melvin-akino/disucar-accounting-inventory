@@ -1,3 +1,4 @@
+import { num } from "@/lib/utils";
 import { getServerSession } from "next-auth";
 import { redirect } from "next/navigation";
 import { authOptions } from "@/lib/auth";
@@ -42,16 +43,16 @@ export default async function InboundPage() {
       skuCode: l.sku.sku,
       skuName: l.sku.name,
       unit: l.sku.unit,
-      qty: l.qty,
+      qty: num(l.qty),
       unitCost: Number(l.unitCost),
-      accepted: l.accepted,
-      damaged: l.damaged,
+      accepted: num(l.accepted),
+      damaged: num(l.damaged),
     })),
     backorders: po.backorders.map(b => ({
       id: b.id,
       poLineId: b.poLineId,
       skuId: b.skuId,
-      qty: b.qty,
+      qty: num(b.qty),
       costPerUnit: b.costPerUnit.toString(),
       disposition: b.disposition,
       badReasonType: b.badReasonType,

@@ -1,3 +1,4 @@
+import { num } from "@/lib/utils";
 import { getServerSession } from "next-auth";
 import { redirect } from "next/navigation";
 import { authOptions } from "@/lib/auth";
@@ -47,7 +48,7 @@ export default async function AuditPage() {
       type: "stock" as const,
       at: m.at.toISOString(),
       actor: m.by ?? "System",
-      title: `${m.type}: ${m.qty >= 0 ? "+" : ""}${m.qty} ${m.sku.name}`,
+      title: `${m.type}: ${num(m.qty) >= 0 ? "+" : ""}${num(m.qty)} ${m.sku.name}`,
       sub: [m.warehouse.name, m.ref, m.note].filter(Boolean).join(" · ") || null,
       ref: m.skuId,
     })),

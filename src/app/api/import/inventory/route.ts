@@ -1,3 +1,4 @@
+import { num } from "@/lib/utils";
 import { NextRequest } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
@@ -65,7 +66,7 @@ export async function POST(req: NextRequest) {
       });
 
       if (existing) {
-        const delta = onHand - existing.onHand;
+        const delta = onHand - num(existing.onHand);
         await prisma.$transaction([
           prisma.stock.update({
             where: { skuId_warehouseId: { skuId, warehouseId } },

@@ -4,7 +4,7 @@ import Link from "next/link";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { StatePill } from "@/components/ui/StatePill";
-import { fmtDateTime } from "@/lib/utils";
+import { fmtDateTime , num } from "@/lib/utils";
 import { NEXT_STATE, STATE_LABEL } from "@/types";
 import type { OrderState } from "@prisma/client";
 import { OrderActions } from "./OrderActions";
@@ -52,7 +52,7 @@ export default async function OrderDetailPage({ params }: Props) {
     id: line.id,
     name: line.sku.name,
     sku: line.sku.sku,
-    qty: line.qty,
+    qty: num(line.qty),
     unitPrice: Number(line.unitPrice),
     lineTotal: Number(line.lineTotal),
     discountPct: line.discountPct != null ? Number(line.discountPct) : null,
@@ -60,7 +60,7 @@ export default async function OrderDetailPage({ params }: Props) {
     lots: (line.lots ?? []).map((oll) => ({
       id: oll.id,
       lotNumber: oll.lot.lotNumber,
-      qtyTaken: oll.qtyTaken,
+      qtyTaken: num(oll.qtyTaken),
       expiryDate: oll.lot.expiryDate ? oll.lot.expiryDate.toISOString() : null,
     })),
   }));

@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Modal } from "@/components/ui/Modal";
 import { ImportModal } from "@/components/ui/ImportModal";
 import { peso } from "@/lib/utils";
+import { volumeFromDimensions } from "@/lib/bulk";
 import { createCatalogItem, updateCatalogItem, uploadCatalogImage, createCategory, updateCategory, deleteCategory } from "./actions";
 
 const IMPORT_COLUMNS = [
@@ -36,6 +37,12 @@ export interface CatalogRow {
   unitPrice: string;
   wholesalePrice: string | null;
   wholesaleMinQty: number | null;
+  itemKind: "PACKAGED" | "BULK" | "BULK_VESSEL";
+  bulkSourceId: string | null;
+  bulkVolumeM3: number | null;
+  lengthM: number | null;
+  widthM: number | null;
+  heightM: number | null;
   brand: string | null;
   imageUrl: string | null;
   active: boolean;
@@ -55,6 +62,12 @@ interface FormState {
   unitPrice: string;
   wholesalePrice: string;
   wholesaleMinQty: string;
+  itemKind: "PACKAGED" | "BULK" | "BULK_VESSEL";
+  bulkSourceId: string;
+  bulkVolumeM3: string;
+  lengthM: string;
+  widthM: string;
+  heightM: string;
   brand: string;
   imageUrl: string;
   supplierId: string;
@@ -63,7 +76,7 @@ interface FormState {
 }
 
 function emptyForm(): FormState {
-  return { sku: "", name: "", category: "OTHER", unit: "case", unitsPerCase: "", unitPrice: "", wholesalePrice: "", wholesaleMinQty: "", brand: "", imageUrl: "", supplierId: "", parentId: "", active: true };
+  return { sku: "", name: "", category: "OTHER", unit: "case", unitsPerCase: "", unitPrice: "", wholesalePrice: "", wholesaleMinQty: "", itemKind: "PACKAGED", bulkSourceId: "", bulkVolumeM3: "", lengthM: "", widthM: "", heightM: "", brand: "", imageUrl: "", supplierId: "", parentId: "", active: true };
 }
 
 function rowToForm(r: CatalogRow): FormState {
@@ -76,6 +89,12 @@ function rowToForm(r: CatalogRow): FormState {
     unitPrice: r.unitPrice,
     wholesalePrice: r.wholesalePrice ?? "",
     wholesaleMinQty: r.wholesaleMinQty?.toString() ?? "",
+    itemKind: r.itemKind,
+    bulkSourceId: r.bulkSourceId ?? "",
+    bulkVolumeM3: r.bulkVolumeM3?.toString() ?? "",
+    lengthM: r.lengthM?.toString() ?? "",
+    widthM: r.widthM?.toString() ?? "",
+    heightM: r.heightM?.toString() ?? "",
     brand: r.brand ?? "",
     imageUrl: r.imageUrl ?? "",
     supplierId: r.supplierId ?? "",
@@ -99,6 +118,7 @@ function CatalogForm({
   suppliers,
   categories,
   caseItems,
+  bulkItems,
   editingId,
   err,
   pending,
@@ -111,6 +131,7 @@ function CatalogForm({
   suppliers: Supplier[];
   categories: CategoryRow[];
   caseItems: CatalogRow[];
+  bulkItems: CatalogRow[];
   editingId: string | null;
   err: string;
   pending: boolean;
@@ -167,6 +188,59 @@ function CatalogForm({
           <input className="field-input" value={form.brand} onChange={set("brand")} placeholder="Optional" />
         </Field>
       </div>
+      <Field label="Item Type *">
+        <select
+          className="field-input"
+          value={form.itemKind}
+          onChange={e => setForm({ ...form, itemKind: e.target.value as FormState["itemKind"] })}
+        >
+          <option value="PACKAGED">Packaged — sold in discrete units (bags, lengths, sheets)</option>
+          <option value="BULK">Stockpile — measured by volume in m³ (sand, gravel, crush)</option>
+          <option value="BULK_VESSEL">Truck size — sold by the load, drawn from a stockpile</option>
+        </select>
+      </Field>
+
+      {form.itemKind === "BULK_VESSEL" && (
+        <div style={{ padding: "10px 12px", borderRadius: 6, background: "oklch(var(--bg-2))", border: "1px solid oklch(var(--line))" }}>
+          <p style={{ fontSize: 11.5, color: "oklch(var(--ink-3))", marginBottom: 10 }}>
+            A truck size holds no stock of its own — each one sold draws its volume from the
+            stockpile below. Selling 3 of these is one line of qty 3.
+          </p>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 10 }}>
+            <Field label="Draws from stockpile *">
+              <select className="field-input" value={form.bulkSourceId} onChange={set("bulkSourceId")}>
+                <option value="">— Select material —</option>
+                {bulkItems.map(b => <option key={b.id} value={b.id}>{b.sku} — {b.name}</option>)}
+              </select>
+            </Field>
+            <Field label="Capacity (m³) *">
+              <input className="field-input" type="number" min="0.001" step="0.001" value={form.bulkVolumeM3} onChange={set("bulkVolumeM3")} placeholder="e.g. 2.5" />
+            </Field>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+            <Field label="Length (m)">
+              <input className="field-input" type="number" min="0" step="0.001" value={form.lengthM} onChange={set("lengthM")} placeholder="2.00" />
+            </Field>
+            <Field label="Width (m)">
+              <input className="field-input" type="number" min="0" step="0.001" value={form.widthM} onChange={set("widthM")} placeholder="1.50" />
+            </Field>
+            <Field label="Height (m)">
+              <input className="field-input" type="number" min="0" step="0.001" value={form.heightM} onChange={set("heightM")} placeholder="0.833" />
+            </Field>
+          </div>
+          {form.lengthM && form.widthM && form.heightM && (
+            <p style={{ fontSize: 11.5, color: "oklch(var(--ink-3))", marginTop: 8 }}>
+              L × W × H = {volumeFromDimensions({
+                lengthM: parseFloat(form.lengthM) || 0,
+                widthM: parseFloat(form.widthM) || 0,
+                heightM: parseFloat(form.heightM) || 0,
+              })} m³
+              {form.bulkVolumeM3 && ` · billed capacity ${form.bulkVolumeM3} m³`}
+            </p>
+          )}
+        </div>
+      )}
+
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <Field label="Wholesale Price (₱)">
           <input className="field-input" type="number" min="0.01" step="0.01" value={form.wholesalePrice} onChange={set("wholesalePrice")} placeholder="Leave blank — not sold wholesale" />
@@ -233,6 +307,8 @@ export function CatalogClient({ items, suppliers, categories }: { items: Catalog
   const router = useRouter();
   // Case-level SKUs (not piece variants themselves) are the valid parents for a piece SKU.
   const caseItems = items.filter(i => i.unit !== "pc");
+  // Only stockpile materials can back a truck size.
+  const bulkItems = items.filter(i => i.itemKind === "BULK");
   const [pending, startTransition] = useTransition();
   const [createOpen, setCreateOpen] = useState(false);
   const [editItem, setEditItem] = useState<CatalogRow | null>(null);
@@ -269,7 +345,13 @@ export function CatalogClient({ items, suppliers, categories }: { items: Catalog
           unitsPerCase: createForm.unitsPerCase ? parseInt(createForm.unitsPerCase, 10) : null,
           unitPrice: parseFloat(createForm.unitPrice),
           wholesalePrice: createForm.wholesalePrice ? parseFloat(createForm.wholesalePrice) : null,
-          wholesaleMinQty: createForm.wholesaleMinQty ? parseInt(createForm.wholesaleMinQty, 10) : null,
+          wholesaleMinQty: createForm.wholesaleMinQty ? parseFloat(createForm.wholesaleMinQty) : null,
+          itemKind: createForm.itemKind,
+          bulkSourceId: createForm.bulkSourceId || null,
+          bulkVolumeM3: createForm.bulkVolumeM3 ? parseFloat(createForm.bulkVolumeM3) : null,
+          lengthM: createForm.lengthM ? parseFloat(createForm.lengthM) : null,
+          widthM: createForm.widthM ? parseFloat(createForm.widthM) : null,
+          heightM: createForm.heightM ? parseFloat(createForm.heightM) : null,
           brand: createForm.brand || undefined,
           imageUrl: createForm.imageUrl || null,
           supplierId: createForm.supplierId || null,
@@ -293,7 +375,13 @@ export function CatalogClient({ items, suppliers, categories }: { items: Catalog
           unitsPerCase: editForm.unitsPerCase ? parseInt(editForm.unitsPerCase, 10) : null,
           unitPrice: parseFloat(editForm.unitPrice),
           wholesalePrice: editForm.wholesalePrice ? parseFloat(editForm.wholesalePrice) : null,
-          wholesaleMinQty: editForm.wholesaleMinQty ? parseInt(editForm.wholesaleMinQty, 10) : null,
+          wholesaleMinQty: editForm.wholesaleMinQty ? parseFloat(editForm.wholesaleMinQty) : null,
+          itemKind: editForm.itemKind,
+          bulkSourceId: editForm.bulkSourceId || null,
+          bulkVolumeM3: editForm.bulkVolumeM3 ? parseFloat(editForm.bulkVolumeM3) : null,
+          lengthM: editForm.lengthM ? parseFloat(editForm.lengthM) : null,
+          widthM: editForm.widthM ? parseFloat(editForm.widthM) : null,
+          heightM: editForm.heightM ? parseFloat(editForm.heightM) : null,
           brand: editForm.brand || undefined,
           imageUrl: editForm.imageUrl || null,
           supplierId: editForm.supplierId || null,
@@ -390,13 +478,13 @@ export function CatalogClient({ items, suppliers, categories }: { items: Catalog
 
       <Modal open={createOpen} onClose={() => setCreateOpen(false)} title="New Catalog Item">
         <div className="card-body" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-          <CatalogForm form={createForm} setForm={setCreateForm} suppliers={suppliers} categories={categories} caseItems={caseItems} editingId={null} err={err} pending={pending} onCancel={() => setCreateOpen(false)} onSubmit={submitCreate} submitLabel="Create Item" />
+          <CatalogForm form={createForm} setForm={setCreateForm} suppliers={suppliers} categories={categories} caseItems={caseItems} bulkItems={bulkItems} editingId={null} err={err} pending={pending} onCancel={() => setCreateOpen(false)} onSubmit={submitCreate} submitLabel="Create Item" />
         </div>
       </Modal>
 
       <Modal open={!!editItem} onClose={() => setEditItem(null)} title={editItem ? `Edit — ${editItem.name}` : "Edit"}>
         <div className="card-body" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-          <CatalogForm form={editForm} setForm={setEditForm} suppliers={suppliers} categories={categories} caseItems={caseItems} editingId={editItem?.id ?? null} err={err} pending={pending} onCancel={() => setEditItem(null)} onSubmit={submitEdit} submitLabel="Save Changes" />
+          <CatalogForm form={editForm} setForm={setEditForm} suppliers={suppliers} categories={categories} caseItems={caseItems} bulkItems={bulkItems} editingId={editItem?.id ?? null} err={err} pending={pending} onCancel={() => setEditItem(null)} onSubmit={submitEdit} submitLabel="Save Changes" />
         </div>
       </Modal>
 

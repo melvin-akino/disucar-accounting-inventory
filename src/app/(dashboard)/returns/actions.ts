@@ -1,5 +1,6 @@
 "use server";
 
+import { num } from "@/lib/utils";
 import { revalidatePath } from "next/cache";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
@@ -50,7 +51,7 @@ export async function createReturn(input: z.infer<typeof CreateReturnSchema>) {
   for (const line of data.lines) {
     const orderLine = order.lines.find(l => l.skuId === line.skuId);
     if (!orderLine) throw new Error(`SKU not found in original order`);
-    if (line.qtyRequested > orderLine.qty) {
+    if (line.qtyRequested > num(orderLine.qty)) {
       throw new Error(`Cannot return more than ordered qty for "${line.name}"`);
     }
   }
@@ -252,7 +253,7 @@ export async function receiveReturnsBulk(returnIds: string[]): Promise<{ receive
   for (const id of returnIds) {
     const ret = await prisma.returnRequest.findUnique({ where: { id }, include: { lines: true } });
     if (!ret || ret.status !== "APPROVED") { skipped.push(id); continue; }
-    const lines = ret.lines.map(l => ({ id: l.id, qtyReceived: l.qtyRequested }));
+    const lines = ret.lines.map(l => ({ id: l.id, qtyReceived: num(l.qtyRequested) }));
     await receiveReturn(id, lines);
     received++;
   }

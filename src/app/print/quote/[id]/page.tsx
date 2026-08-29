@@ -1,3 +1,4 @@
+import { num } from "@/lib/utils";
 import { getServerSession } from "next-auth";
 import { redirect, notFound } from "next/navigation";
 import { authOptions } from "@/lib/auth";
@@ -146,7 +147,7 @@ export default async function PrintQuotePage({ params }: { params: { id: string 
                     <div style={{ fontSize: 10, color: "#6b7280" }}>SKU: {line.sku.sku}</div>
                   </td>
                   <td>{line.unit}</td>
-                  <td className="num">{line.qty}</td>
+                  <td className="num">{num(line.qty)}</td>
                   <td className="num">{peso(Number(line.unitPrice))}</td>
                   <td className="num">{peso(Number(line.lineTotal))}</td>
                 </tr>

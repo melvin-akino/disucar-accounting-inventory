@@ -1,3 +1,4 @@
+import { num } from "@/lib/utils";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
@@ -61,7 +62,10 @@ export default async function ReturnsPage() {
       </div>
       <ReturnsClient
         returns={JSON.parse(JSON.stringify(returns))}
-        deliveredOrders={deliveredOrders}
+        deliveredOrders={deliveredOrders.map(o => ({
+          ...o,
+          lines: o.lines.map(l => ({ ...l, qty: num(l.qty) })),
+        }))}
         canApprove={["FINANCE", "ADMIN", "WAREHOUSE"].includes(role)}
         canReceive={["WAREHOUSE", "ADMIN"].includes(role)}
         canClose={["FINANCE", "ADMIN"].includes(role)}

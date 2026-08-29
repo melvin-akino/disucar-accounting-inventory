@@ -7,7 +7,7 @@ import { prisma } from "@/lib/prisma";
 import { NEXT_STATE } from "@/types";
 import type { OrderState } from "@prisma/client";
 import { z } from "zod";
-import { orderTotal } from "@/lib/utils";
+import { orderTotal, num } from "@/lib/utils";
 import { getCustomerCredit } from "@/lib/credit";
 import { sendOrderEmail } from "@/lib/email";
 import { nextCode } from "@/lib/ids";
@@ -20,6 +20,7 @@ import {
   type CostedLotAllocation,
 } from "@/lib/order-logic";
 import { writeAudit } from "@/lib/audit";
+import { resolveStockDraw } from "@/lib/bulk";
 import { inventoryAccountFor, COGS_ACCOUNT } from "@/lib/coa";
 import { resolveUnitPrice, checkWholesaleMinimums, formatViolations, canApprove } from "@/lib/wholesale";
 
@@ -27,29 +28,81 @@ export { getCustomerCredit };
 
 // ── Stock helpers ─────────────────────────────────────────────────────────────
 
+/**
+ * Translate order lines into the stock they actually move.
+ *
+ * A packaged or bulk line moves its own SKU. A truck-size line moves the stockpile it
+ * draws from: 3 mini-trucks of 2.5 m3 become 7.5 m3 against the sand, and nothing is
+ * ever reserved or picked against the vessel SKU itself.
+ *
+ * Draws are merged per material, so two different truck sizes cut from the same pile
+ * cannot each be reserved against the full quantity on hand.
+ */
+async function resolveDraws(
+  lines: { skuId: string; qty: unknown; name: string }[]
+): Promise<{ skuId: string; qty: number; name: string }[]> {
+  const items = await prisma.catalogItem.findMany({
+    where: { id: { in: lines.map((l) => l.skuId) } },
+    select: {
+      id: true, name: true, itemKind: true, bulkSourceId: true,
+      bulkVolumeM3: true, lengthM: true, widthM: true, heightM: true,
+    },
+  });
+  const itemMap = new Map(items.map((i) => [i.id, i]));
+
+  const merged = new Map<string, { skuId: string; qty: number; name: string }>();
+  for (const line of lines) {
+    const item = itemMap.get(line.skuId);
+    if (!item) throw new Error(`Unknown item on order line: ${line.name}`);
+
+    const draw = resolveStockDraw(
+      {
+        id: item.id,
+        name: item.name,
+        itemKind: item.itemKind,
+        bulkSourceId: item.bulkSourceId,
+        bulkVolumeM3: item.bulkVolumeM3 === null ? null : num(item.bulkVolumeM3),
+        lengthM: item.lengthM === null ? null : num(item.lengthM),
+        widthM: item.widthM === null ? null : num(item.widthM),
+        heightM: item.heightM === null ? null : num(item.heightM),
+      },
+      num(line.qty as number)
+    );
+
+    const existing = merged.get(draw.skuId);
+    if (existing) {
+      existing.qty = Math.round((existing.qty + draw.qty) * 1000) / 1000;
+    } else {
+      merged.set(draw.skuId, { skuId: draw.skuId, qty: draw.qty, name: line.name });
+    }
+  }
+  return Array.from(merged.values());
+}
+
 async function reserveStock(orderId: string, warehouseId: string) {
   const lines = await prisma.orderLine.findMany({ where: { orderId } });
+  const draws = await resolveDraws(lines);
 
   // Check availability first (onHand - reserved >= qty needed)
-  for (const line of lines) {
+  for (const draw of draws) {
     const stock = await prisma.stock.findUnique({
-      where: { skuId_warehouseId: { skuId: line.skuId, warehouseId } },
+      where: { skuId_warehouseId: { skuId: draw.skuId, warehouseId } },
     });
-    const available = (stock?.onHand ?? 0) - (stock?.reserved ?? 0);
-    if (available < line.qty) {
+    const available = num(stock?.onHand) - num(stock?.reserved);
+    if (available < draw.qty) {
       throw new Error(
-        `Insufficient stock for "${line.name}": ${available} available, ${line.qty} needed. Adjust stock before approving.`
+        `Insufficient stock for "${draw.name}": ${available} available, ${draw.qty} needed. Adjust stock before approving.`
       );
     }
   }
 
   // All good — reserve
   await Promise.all(
-    lines.map(line =>
+    draws.map(draw =>
       prisma.stock.upsert({
-        where: { skuId_warehouseId: { skuId: line.skuId, warehouseId } },
-        update: { reserved: { increment: line.qty } },
-        create: { skuId: line.skuId, warehouseId, onHand: 0, reserved: line.qty },
+        where: { skuId_warehouseId: { skuId: draw.skuId, warehouseId } },
+        update: { reserved: { increment: draw.qty } },
+        create: { skuId: draw.skuId, warehouseId, onHand: 0, reserved: draw.qty },
       })
     )
   );
@@ -57,11 +110,12 @@ async function reserveStock(orderId: string, warehouseId: string) {
 
 async function releaseReservation(orderId: string, warehouseId: string) {
   const lines = await prisma.orderLine.findMany({ where: { orderId } });
+  const draws = await resolveDraws(lines);
   await Promise.all(
-    lines.map(line =>
+    draws.map(draw =>
       prisma.stock.updateMany({
-        where: { skuId: line.skuId, warehouseId },
-        data: { reserved: { decrement: line.qty } },
+        where: { skuId: draw.skuId, warehouseId },
+        data: { reserved: { decrement: draw.qty } },
       })
     )
   );
@@ -90,15 +144,23 @@ async function consumeStock(
 
   // Allocate before opening the transaction so an insufficient-stock error surfaces
   // without having written anything.
-  const plan: { line: (typeof lines)[number]; allocations: CostedLotAllocation[] }[] = [];
+  const plan: {
+    line: (typeof lines)[number];
+    draw: { skuId: string; qty: number };
+    allocations: CostedLotAllocation[];
+  }[] = [];
+
   for (const line of lines) {
+    // A truck-size line consumes cubic metres of its stockpile, not units of itself.
+    const [draw] = await resolveDraws([line]);
+
     const lots = await prisma.lot.findMany({
-      where: { skuId: line.skuId, warehouseId, remainingQty: { gt: 0 }, status: "ACTIVE" },
+      where: { skuId: draw.skuId, warehouseId, remainingQty: { gt: 0 }, status: "ACTIVE" },
     });
     const costed = lots.map((l) => ({
       id: l.id,
-      remainingQty: l.remainingQty,
-      unitCost: Number(l.unitCost),
+      remainingQty: num(l.remainingQty),
+      unitCost: num(l.unitCost),
       receivedAt: l.receivedAt,
     }));
 
@@ -106,15 +168,15 @@ async function consumeStock(
     // moves between order entry and delivery — another order may have drained a layer,
     // or a lot may have been quarantined — so an unsatisfiable plan degrades to FIFO
     // rather than blocking the delivery.
-    const planned = line.plannedLots.map((p) => ({ lotId: p.lotId, qty: p.qtyPlanned }));
+    const planned = line.plannedLots.map((p) => ({ lotId: p.lotId, qty: num(p.qtyPlanned) }));
     const plannedUsable =
-      planned.length > 0 && validateLotPlan(planned, costed, line.qty).ok;
+      planned.length > 0 && validateLotPlan(planned, costed, draw.qty).ok;
 
     const allocations = plannedUsable
       ? costPlan(planned, costed)
-      : selectLotsFifo(costed, line.qty);
+      : selectLotsFifo(costed, draw.qty);
 
-    plan.push({ line, allocations });
+    plan.push({ line, draw, allocations });
   }
 
   const cogsAmount = totalAllocationCost(plan.flatMap((p) => p.allocations));
@@ -123,25 +185,29 @@ async function consumeStock(
     : null;
 
   await prisma.$transaction(async (tx) => {
-    for (const { line, allocations } of plan) {
+    for (const { line, draw, allocations } of plan) {
       await tx.stock.updateMany({
-        where: { skuId: line.skuId, warehouseId },
+        where: { skuId: draw.skuId, warehouseId },
         data: {
-          onHand: { decrement: line.qty },
-          reserved: { decrement: line.qty },
+          onHand: { decrement: draw.qty },
+          reserved: { decrement: draw.qty },
         },
       });
 
       const lineCost = totalAllocationCost(allocations);
       await tx.stockMove.create({
         data: {
-          skuId: line.skuId,
+          skuId: draw.skuId,
           warehouseId,
           type: "PICK",
-          qty: -line.qty,
-          costPerUnit: line.qty > 0 ? lineCost / line.qty : 0,
+          qty: -draw.qty,
+          costPerUnit: draw.qty > 0 ? lineCost / draw.qty : 0,
           ref: orderId,
-          note: `Picked for order ${orderId}`,
+          // Names the vessel sold as well as the material moved, so the stock ledger
+          // still explains itself when the SKU on the move is not the SKU on the order.
+          note: draw.skuId === line.skuId
+            ? `Picked for order ${orderId}`
+            : `Picked for order ${orderId} — ${line.name}`,
           by: actorName,
         },
       });
@@ -212,15 +278,19 @@ export async function getAvailableLots(
   const session = await getServerSession(authOptions);
   if (!session) throw new Error("Unauthenticated");
 
+  // A truck size has no lots of its own — show the stockpile it cuts from, and ask FIFO
+  // about the cubic metres those trucks represent rather than the truck count.
+  const [draw] = await resolveDraws([{ skuId, qty: neededQty, name: "" }]);
+
   const lots = await prisma.lot.findMany({
-    where: { skuId, warehouseId, remainingQty: { gt: 0 }, status: "ACTIVE" },
+    where: { skuId: draw.skuId, warehouseId, remainingQty: { gt: 0 }, status: "ACTIVE" },
     orderBy: [{ receivedAt: "asc" }, { id: "asc" }],
   });
 
   const costed = lots.map((l) => ({
     id: l.id,
-    remainingQty: l.remainingQty,
-    unitCost: Number(l.unitCost),
+    remainingQty: num(l.remainingQty),
+    unitCost: num(l.unitCost),
     receivedAt: l.receivedAt,
   }));
 
@@ -228,7 +298,7 @@ export async function getAvailableLots(
   // salesperson can see how much is actually on hand.
   let fifo: Map<string, number>;
   try {
-    fifo = new Map(selectLotsFifo(costed, neededQty).map((a) => [a.lotId, a.take]));
+    fifo = new Map(selectLotsFifo(costed, draw.qty).map((a) => [a.lotId, a.take]));
   } catch {
     fifo = new Map();
   }
@@ -236,8 +306,8 @@ export async function getAvailableLots(
   return lots.map((l) => ({
     id: l.id,
     lotNumber: l.lotNumber,
-    remainingQty: l.remainingQty,
-    unitCost: Number(l.unitCost),
+    remainingQty: num(l.remainingQty),
+    unitCost: num(l.unitCost),
     receivedAt: l.receivedAt.toISOString(),
     expiryDate: l.expiryDate ? l.expiryDate.toISOString() : null,
     fifoQty: fifo.get(l.id) ?? 0,
@@ -274,17 +344,17 @@ export async function assertWholesaleMinimumsStillMet(orderId: string): Promise<
         name: i.name,
         unitPrice: Number(i.unitPrice),
         wholesalePrice: i.wholesalePrice === null ? null : Number(i.wholesalePrice),
-        wholesaleMinQty: i.wholesaleMinQty,
+        wholesaleMinQty: i.wholesaleMinQty === null ? null : num(i.wholesaleMinQty),
       },
     ])
   );
 
   const violations = checkWholesaleMinimums(
     "WHOLESALE",
-    order.lines,
+    order.lines.map((l) => ({ skuId: l.skuId, qty: num(l.qty) })),
     itemMap,
     {
-      defaultMinQty: settings?.wholesaleDefaultMinQty ?? 1,
+      defaultMinQty: settings ? num(settings.wholesaleDefaultMinQty) : 1,
       minOrderTotal: settings ? Number(settings.wholesaleMinOrderTotal) : 0,
     },
     Number(order.total)
@@ -474,7 +544,7 @@ export async function applyOrderDiscount(orderId: string, input: z.infer<typeof 
 
   const lineUpdates = order.lines.map(line => {
     const pct = pctFor(line.id, line.isFree);
-    const gross = Number(line.unitPrice) * line.qty;
+    const gross = num(line.unitPrice) * num(line.qty);
     const lineTotal = Math.round(gross * (1 - pct / 100) * 100) / 100;
     return prisma.orderLine.update({
       where: { id: line.id },
@@ -483,10 +553,10 @@ export async function applyOrderDiscount(orderId: string, input: z.infer<typeof 
   });
 
   // Gross subtotal (unchanged) and discounted net.
-  const grossSubtotal = order.lines.reduce((s, l) => s + Number(l.unitPrice) * l.qty, 0);
+  const grossSubtotal = order.lines.reduce((s, l) => s + num(l.unitPrice) * num(l.qty), 0);
   const net = order.lines.reduce((s, l) => {
     const pct = pctFor(l.id, l.isFree);
-    return s + Math.round(Number(l.unitPrice) * l.qty * (1 - pct / 100) * 100) / 100;
+    return s + Math.round(num(l.unitPrice) * num(l.qty) * (1 - pct / 100) * 100) / 100;
   }, 0);
   const { vat, cwt, total } = orderTotal(net, order.cwt2307);
 
@@ -529,14 +599,15 @@ const NewOrderSchema = z.object({
   lines: z.array(
     z.object({
       skuId: z.string().min(1),
-      qty: z.number().int().positive(),
+      // Fractional for bulk material sold by volume; whole numbers for everything else.
+      qty: z.number().positive(),
       // 0 is allowed for free items; negative is never valid.
       unitPrice: z.number().nonnegative(),
       isFree: z.boolean().default(false),
       discountPct: z.number().min(0).max(100).optional(),
       // Explicit lot selection. Omitted or empty means "use FIFO", which is what the
       // form submits unless the salesperson edited the pre-filled selection.
-      lotPlan: z.array(z.object({ lotId: z.string().min(1), qty: z.number().int().positive() })).optional(),
+      lotPlan: z.array(z.object({ lotId: z.string().min(1), qty: z.number().positive() })).optional(),
       lotOverrideReason: z.string().optional(),
     })
   ).min(1),
@@ -569,7 +640,7 @@ export async function createOrder(input: z.input<typeof NewOrderSchema>) {
         name: i.name,
         unitPrice: Number(i.unitPrice),
         wholesalePrice: i.wholesalePrice === null ? null : Number(i.wholesalePrice),
-        wholesaleMinQty: i.wholesaleMinQty,
+        wholesaleMinQty: i.wholesaleMinQty === null ? null : num(i.wholesaleMinQty),
       },
     ])
   );
@@ -595,7 +666,7 @@ export async function createOrder(input: z.input<typeof NewOrderSchema>) {
       linesWithPrice,
       pricedMap,
       {
-        defaultMinQty: settings?.wholesaleDefaultMinQty ?? 1,
+        defaultMinQty: settings ? num(settings.wholesaleDefaultMinQty) : 1,
         minOrderTotal: settings ? Number(settings.wholesaleMinOrderTotal) : 0,
       },
       total
@@ -629,8 +700,8 @@ export async function createOrder(input: z.input<typeof NewOrderSchema>) {
       });
       const costed = lots.map((lot) => ({
         id: lot.id,
-        remainingQty: lot.remainingQty,
-        unitCost: Number(lot.unitCost),
+        remainingQty: num(lot.remainingQty),
+        unitCost: num(lot.unitCost),
         receivedAt: lot.receivedAt,
       }));
 

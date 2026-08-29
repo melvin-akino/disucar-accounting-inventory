@@ -9,6 +9,7 @@ import type { BoDisposition, BoReasonType } from "@prisma/client";
 import { hasActiveReliefGrant } from "@/lib/reliever";
 import { nextCode } from "@/lib/ids";
 import { inventoryAccountFor } from "@/lib/coa";
+import { num } from "@/lib/utils";
 
 async function requireAccess() {
   const session = await getServerSession(authOptions);
@@ -34,7 +35,7 @@ const CreatePoSchema = z.object({
   supplierId: z.string(),
   warehouseId: z.string(),
   expectedAt: z.string(),
-  lines: z.array(z.object({ skuId: z.string(), qty: z.number().int().positive(), unitCost: z.number().min(0) })).min(1),
+  lines: z.array(z.object({ skuId: z.string(), qty: z.number().positive(), unitCost: z.number().min(0) })).min(1),
 });
 
 export async function createPO(input: z.infer<typeof CreatePoSchema>) {
@@ -73,8 +74,8 @@ const ReceivePoSchema = z.object({
   lines: z.array(z.object({
     lineId: z.string(),
     skuId: z.string(),
-    accepted: z.number().int().min(0),
-    damaged: z.number().int().min(0),
+    accepted: z.number().min(0),
+    damaged: z.number().min(0),
     lotNumber: z.string().optional(),
     expiryDate: z.string().optional(),
     // Landed cost for THIS receipt. Omitted means "same as agreed on the PO line".
@@ -178,7 +179,7 @@ export async function generateReorderPOs(warehouseId: string | "ALL") {
   });
 
   const needReorder = lowStocks.filter(
-    s => s.reorderAt != null && s.onHand - s.reserved <= s.reorderAt
+    s => s.reorderAt != null && num(s.onHand) - num(s.reserved) <= s.reorderAt
   );
 
   if (needReorder.length === 0) return { created: 0 };
@@ -211,7 +212,7 @@ export async function generateReorderPOs(warehouseId: string | "ALL") {
         lines: {
           create: items.map(s => ({
             skuId: s.skuId,
-            qty: Math.max((s.maxLevel ?? s.reorderAt! * 2) - s.onHand, 1),
+            qty: Math.max((s.maxLevel ?? s.reorderAt! * 2) - num(s.onHand), 1),
           })),
         },
       },
@@ -230,7 +231,7 @@ const LogBackorderSchema = z.object({
   poLineId: z.string(),
   skuId: z.string(),
   warehouseId: z.string(),
-  qty: z.number().int().positive(),
+  qty: z.number().positive(),
   costPerUnit: z.number().min(0),
   disposition: z.enum(["GOOD", "BAD"]),
   badReasonType: z.enum(["RAT_BITE", "DAMAGED_CONTAINER", "EXPIRED", "WRONG_ITEM", "SHORT_SHIP", "OTHER"]).optional(),
@@ -249,8 +250,8 @@ export async function logBackorder(input: z.infer<typeof LogBackorderSchema>) {
     include: { backorders: true, po: { include: { warehouse: true } } },
   });
 
-  const alreadyLogged = line.backorders.reduce((s, b) => s + b.qty, 0);
-  const outstanding = line.damaged - alreadyLogged;
+  const alreadyLogged = line.backorders.reduce((s, b) => s + num(b.qty), 0);
+  const outstanding = num(line.damaged) - alreadyLogged;
   if (data.qty > outstanding) {
     throw new Error(`Cannot log ${data.qty} units — only ${outstanding} unit(s) of damaged qty remain unresolved on this line.`);
   }
@@ -364,10 +365,10 @@ export async function closePO(poId: string) {
   if (po.closedAt) throw new Error(`PO ${poId} is already closed.`);
 
   for (const line of po.lines) {
-    const logged = line.backorders.reduce((s, b) => s + b.qty, 0);
-    if (logged !== line.damaged) {
+    const logged = line.backorders.reduce((s, b) => s + num(b.qty), 0);
+    if (logged !== num(line.damaged)) {
       throw new Error(
-        `${line.damaged - logged} unit(s) of ${line.sku.name} still unresolved — log a B.O. disposition for all damaged units before closing.`
+        `${num(line.damaged) - logged} unit(s) of ${line.sku.name} still unresolved — log a B.O. disposition for all damaged units before closing.`
       );
     }
   }
