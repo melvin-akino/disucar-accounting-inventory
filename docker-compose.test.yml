@@ -23,6 +23,9 @@ services:
     build:
       context: .
       target: builder
+    # Throwaway test database: db push is fine and faster here, since the schema is
+    # built from scratch for each run and there is no data to lose. Production uses
+    # `prisma migrate deploy` instead (see docker-compose.yml).
     command: >
       sh -c "npx prisma db push --accept-data-loss &&
              npm run test -- --reporter=verbose"

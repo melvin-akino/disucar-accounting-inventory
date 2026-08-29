@@ -213,10 +213,20 @@ cp .env.example .env.production
 # Build and start
 docker compose up -d --build
 
-# Run migrations on first deploy
-docker compose exec app npx prisma db push
-docker compose exec app npx prisma db seed
+# Migrations run automatically at boot (the `migrate` service applies
+# prisma/migrations via `prisma migrate deploy`). To apply them by hand:
+docker compose exec app npx prisma migrate deploy
+
+# Demo data — FIRST DEPLOY ONLY. This seeds sample customers, catalog and
+# ledger entries, so never run it against a database holding real orders.
+SEED_DEMO_DATA=true docker compose up -d migrate
 ```
+
+> **Never run `prisma db push` against production.** It infers the change set at
+> runtime and will drop a column or table to make the database match the schema.
+> Schema changes belong in a committed migration: edit `prisma/schema.prisma`,
+> run `npm run db:migrate -- --name what_changed` locally, commit the generated
+> folder under `prisma/migrations/`, and let `migrate deploy` apply it.
 
 The app listens on port **3000**. Recommended: Nginx or Caddy as reverse proxy for HTTPS.
 

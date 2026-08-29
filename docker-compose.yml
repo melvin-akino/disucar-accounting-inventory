@@ -11,11 +11,19 @@ services:
       context: .
       target: builder
     container_name: disucar-sales-migrate
+    # `migrate deploy` applies the committed migrations in prisma/migrations and nothing
+    # else. It replaced `db push --accept-data-loss`, which inferred the changes at boot
+    # and would silently drop a column or table to make the database match the schema —
+    # survivable against demo data, not against real orders.
+    #
+    # Seeding is opt-in: it loads demo customers, catalog and ledger entries, so it must
+    # not run against a live database. Set SEED_DEMO_DATA=true for a fresh environment.
     command: >
-      sh -c "npx prisma db push --accept-data-loss &&
-             npx tsx prisma/seed.ts"
+      sh -c "npx prisma migrate deploy &&
+             if [ \"$$SEED_DEMO_DATA\" = \"true\" ]; then npx tsx prisma/seed.ts; else echo 'Skipping demo seed (set SEED_DEMO_DATA=true to load it).'; fi"
     environment:
       TZ: Asia/Manila
+      SEED_DEMO_DATA: "${SEED_DEMO_DATA:-false}"
       DATABASE_URL: postgresql://postgres:changeme@localhost:5432/disucar
       DIRECT_URL: postgresql://postgres:changeme@localhost:5432/disucar
       NEXTAUTH_SECRET: demo-secret-for-local-dev-change-in-prod
