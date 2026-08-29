@@ -4,7 +4,7 @@
  */
 
 import type { OrderState, Role } from "@prisma/client";
-import { NEXT_STATE } from "@/types";
+import { nextTransition, type OrderChannelValue } from "@/types";
 
 // ── Order totals ──────────────────────────────────────────────────────────────
 
@@ -63,14 +63,24 @@ export function checkStock(onHand: number, reserved: number, requested: number):
 
 // ── State-machine ─────────────────────────────────────────────────────────────
 
-export function canAdvanceState(currentState: OrderState, role: Role): boolean {
-  const transition = NEXT_STATE[currentState];
+// Channel-dependent, since the two paths diverge at PENDING: a retail order is priced
+// straight at the till, a wholesale order needs Admin approval first. Defaults to RETAIL
+// so existing callers that never knew about channels keep the counter behaviour.
+export function canAdvanceState(
+  currentState: OrderState,
+  role: Role,
+  channel: OrderChannelValue = "RETAIL"
+): boolean {
+  const transition = nextTransition(currentState, channel);
   if (!transition) return false;
   return transition.roles.includes(role);
 }
 
-export function nextOrderState(currentState: OrderState): OrderState | null {
-  return NEXT_STATE[currentState]?.next ?? null;
+export function nextOrderState(
+  currentState: OrderState,
+  channel: OrderChannelValue = "RETAIL"
+): OrderState | null {
+  return nextTransition(currentState, channel)?.next ?? null;
 }
 
 // ── FEFO lot selection ────────────────────────────────────────────────────────

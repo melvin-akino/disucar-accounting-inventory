@@ -47,11 +47,12 @@ interface Props {
   isAdmin: boolean;
 }
 
-const ALL_ROLES: Role[] = ["ADMIN", "AGENT", "FINANCE", "WAREHOUSE", "DRIVER", "CUSTOMER"];
+const ALL_ROLES: Role[] = ["ADMIN", "AGENT", "CASHIER", "FINANCE", "WAREHOUSE", "DRIVER", "CUSTOMER"];
 
 const ROLE_COLOR: Record<Role, string> = {
   ADMIN:      "background:oklch(0.17 0.025 255);color:oklch(0.72 0.08 255)",
   AGENT:      "background:oklch(0.94 0.03 240);color:oklch(0.35 0.10 240)",
+  CASHIER:    "background:oklch(0.94 0.04 185);color:oklch(0.32 0.10 185)",
   FINANCE:    "background:oklch(0.94 0.04 145);color:oklch(0.32 0.10 145)",
   WAREHOUSE:  "background:oklch(0.94 0.04 75);color:oklch(0.32 0.10 65)",
   DRIVER:     "background:oklch(0.94 0.03 30);color:oklch(0.38 0.10 30)",

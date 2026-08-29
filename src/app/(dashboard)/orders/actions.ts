@@ -4,13 +4,13 @@ import { revalidatePath } from "next/cache";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { NEXT_STATE } from "@/types";
-import type { OrderState } from "@prisma/client";
+import { nextTransition, STATE_LABEL } from "@/types";
+import type { OrderState, PaymentType } from "@prisma/client";
 import { z } from "zod";
 import { orderTotal, num } from "@/lib/utils";
 import { getCustomerCredit } from "@/lib/credit";
 import { sendOrderEmail } from "@/lib/email";
-import { nextCode } from "@/lib/ids";
+import { nextCode, jeId, parseDays } from "@/lib/ids";
 import {
   selectLotsFifo,
   totalAllocationCost,
@@ -20,6 +20,7 @@ import {
   type CostedLotAllocation,
 } from "@/lib/order-logic";
 import { writeAudit } from "@/lib/audit";
+import { settlementView, validatePayment, blockingReason, type SettlementState } from "@/lib/order-flow";
 import { resolveStockDraw } from "@/lib/bulk";
 import { inventoryAccountFor, COGS_ACCOUNT } from "@/lib/coa";
 import { resolveUnitPrice, checkWholesaleMinimums, formatViolations, canApprove } from "@/lib/wholesale";
@@ -363,6 +364,222 @@ export async function assertWholesaleMinimumsStillMet(orderId: string): Promise<
   if (violations.length > 0) throw new Error(formatViolations(violations));
 }
 
+// ── Counter settlement ────────────────────────────────────────────────────────
+
+/**
+ * What this order owes and what has been received against it.
+ *
+ * Payments are held against the order's invoice, so an order with no invoice yet simply
+ * has nothing paid — it is not an error state.
+ */
+export async function getSettlement(orderId: string): Promise<SettlementState> {
+  const order = await prisma.order.findUniqueOrThrow({
+    where: { id: orderId },
+    include: { invoices: { include: { payments: true } } },
+  });
+
+  const paid = order.invoices
+    .flatMap((i) => i.payments)
+    .reduce((sum, p) => sum + num(p.amount), 0);
+
+  return {
+    total: num(order.total),
+    paid: Math.round(paid * 100) / 100,
+    codRelease: order.codRelease,
+  };
+}
+
+/**
+ * Take a payment at the till and, once the order is settled, release it to the warehouse.
+ *
+ * Creates the invoice on first payment rather than requiring Finance to raise one first —
+ * at a counter the sale and the document are the same moment. Posts the sale entry with
+ * the invoice and the cash receipt with the payment, so the ledger stays balanced whether
+ * the customer pays in one go or in parts.
+ */
+export async function takeOrderPayment(
+  orderId: string,
+  amount: number,
+  details?: { paymentType?: PaymentType; bankName?: string; referenceNo?: string }
+): Promise<{ ok: true; settled: boolean } | { ok: false; error: string }> {
+  const session = await getServerSession(authOptions);
+  if (!session) throw new Error("Unauthenticated");
+  if (!["CASHIER", "FINANCE", "ADMIN"].includes(session.user.role)) {
+    return { ok: false, error: "Only a cashier, finance or admin may take payment." };
+  }
+
+  const order = await prisma.order.findUniqueOrThrow({
+    where: { id: orderId },
+    include: { customer: true, invoices: true },
+  });
+  if (order.state !== "AWAITING_PAYMENT") {
+    return { ok: false, error: `Order is ${STATE_LABEL[order.state]}, not awaiting payment.` };
+  }
+
+  const settlement = await getSettlement(orderId);
+  const check = validatePayment(amount, settlement);
+  if (!check.ok) return { ok: false, error: check.error! };
+
+  const total = num(order.total);
+  const vatPortion = Math.round(total * (12 / 112) * 100) / 100;
+  const revPortion = Math.round((total - vatPortion) * 100) / 100;
+
+  // Reuse the order's invoice if one exists, otherwise raise it now.
+  let invoiceId = order.invoices[0]?.id ?? null;
+  const needsInvoice = invoiceId === null;
+  if (needsInvoice) {
+    invoiceId = await nextCode("INV", (since) =>
+      prisma.invoice.count({ where: { createdAt: { gte: since } } })
+    );
+  }
+
+  const salesJeId = needsInvoice ? await jeId() : null;
+  const cashJeId = await jeId();
+  const newPaid = Math.round((settlement.paid + amount) * 100) / 100;
+  const settled = total - newPaid <= 0.01;
+  const paymentType = details?.paymentType ?? "CASH";
+  // Cash at the counter lands in the drawer (1000); anything else is a bank receipt (1010).
+  const cashAccount = paymentType === "CASH" ? "1000" : "1010";
+
+  await prisma.$transaction(async (tx) => {
+    if (needsInvoice) {
+      const due = new Date();
+      due.setDate(due.getDate() + parseDays(order.customer.terms));
+      await tx.invoice.create({
+        data: {
+          id: invoiceId!,
+          customerId: order.customerId,
+          soId: orderId,
+          issued: new Date(),
+          due,
+          amount: total,
+          paid: 0,
+          status: "OPEN",
+        },
+      });
+      await tx.journalEntry.create({
+        data: {
+          id: salesJeId!,
+          source: "AR",
+          ref: orderId,
+          memo: `Invoice ${invoiceId} — ${order.customer.name}`,
+          postedById: session.user.id,
+          lines: {
+            create: [
+              { code: "1100", dr: total, cr: 0 },
+              { code: "4000", dr: 0, cr: revPortion },
+              { code: "2100", dr: 0, cr: vatPortion },
+            ],
+          },
+        },
+      });
+    }
+
+    await tx.invoice.update({
+      where: { id: invoiceId! },
+      data: { paid: newPaid, status: settled ? "PAID" : "PARTIAL" },
+    });
+
+    await tx.payment.create({
+      data: {
+        invoiceId: invoiceId!,
+        amount,
+        paymentType,
+        bankName: details?.bankName || null,
+        referenceNo: details?.referenceNo || null,
+        recordedById: session.user.id,
+      },
+    });
+
+    await tx.journalEntry.create({
+      data: {
+        id: cashJeId,
+        source: "BANK",
+        ref: invoiceId!,
+        memo: `Payment received — ${invoiceId}`,
+        postedById: session.user.id,
+        lines: {
+          create: [
+            { code: cashAccount, dr: amount, cr: 0 },
+            { code: "1100",      dr: 0,      cr: amount },
+          ],
+        },
+      },
+    });
+
+    // Settled in full — release the order to the warehouse in the same transaction, so
+    // the money and the state can never disagree.
+    if (settled) {
+      await tx.order.update({ where: { id: orderId }, data: { state: "PAID" } });
+      await tx.orderEvent.create({
+        data: { orderId, state: "PAID", actorId: session.user.id, note: "Paid in full at the till" },
+      });
+    }
+  });
+
+  revalidatePath("/orders");
+  revalidatePath(`/orders/${orderId}`);
+  revalidatePath("/ledger");
+  return { ok: true, settled };
+}
+
+/**
+ * Admin release of the pay-before-prepare rule, for a customer on terms or a COD run.
+ * The reason is required and recorded — this is the one route by which stock leaves the
+ * yard unpaid, so it must be answerable afterwards.
+ */
+export async function releaseOrderOnAccount(
+  orderId: string,
+  reason: string
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const session = await getServerSession(authOptions);
+  if (!session) throw new Error("Unauthenticated");
+  if (session.user.role !== "ADMIN") {
+    return { ok: false, error: "Only an Admin may release an order on account." };
+  }
+  if (!reason.trim()) {
+    return { ok: false, error: "A reason is required to release an order on account." };
+  }
+
+  const order = await prisma.order.findUniqueOrThrow({ where: { id: orderId } });
+  if (order.state !== "AWAITING_PAYMENT") {
+    return { ok: false, error: `Order is ${STATE_LABEL[order.state]}, not awaiting payment.` };
+  }
+
+  await prisma.$transaction([
+    prisma.order.update({
+      where: { id: orderId },
+      data: {
+        codRelease: true,
+        codReleaseReason: reason.trim(),
+        codReleasedById: session.user.id,
+        codReleasedAt: new Date(),
+      },
+    }),
+    prisma.orderEvent.create({
+      data: {
+        orderId,
+        state: "AWAITING_PAYMENT",
+        actorId: session.user.id,
+        note: `Released on account: ${reason.trim()}`,
+      },
+    }),
+  ]);
+
+  await writeAudit({
+    action: "ORDER_COD_RELEASE",
+    entityType: "Order",
+    entityId: orderId,
+    actorId: session.user.id,
+    actorName: session.user.name ?? session.user.email ?? undefined,
+    meta: { reason: reason.trim(), total: num(order.total) },
+  });
+
+  revalidatePath("/orders");
+  revalidatePath(`/orders/${orderId}`);
+  return { ok: true };
+}
+
 // ── Advance order state FSM ───────────────────────────────────────────────────
 // Returns a result object rather than throwing for expected business-validation failures
 // (e.g. insufficient stock): Next.js redacts thrown Server Action error messages in
@@ -374,7 +591,7 @@ export async function advanceOrderState(
   if (!session) throw new Error("Unauthenticated");
 
   const order = await prisma.order.findUniqueOrThrow({ where: { id: orderId } });
-  const transition = NEXT_STATE[order.state as OrderState];
+  const transition = nextTransition(order.state as OrderState, order.channel);
   if (!transition?.next) throw new Error("No next state");
 
   const userRole = session.user.role;
@@ -390,10 +607,30 @@ export async function advanceOrderState(
     }
     try {
       await assertWholesaleMinimumsStillMet(orderId);
+    } catch (e) {
+      return { ok: false, error: (e as Error).message };
+    }
+  }
+
+  // Reserve at the till, for both channels. Retail has no approval step, so reserving
+  // at APPROVED would leave counter orders unreserved entirely and let two clerks
+  // promise the same cement. Wholesale minimums are re-checked here too, since the
+  // retail path never passed through approval.
+  if (transition.next === "AWAITING_PAYMENT") {
+    try {
+      await assertWholesaleMinimumsStillMet(orderId);
       await reserveStock(orderId, order.warehouseId);
     } catch (e) {
       return { ok: false, error: (e as Error).message };
     }
+  }
+
+  // The payment gate. Nothing reaches the warehouse unsettled unless an Admin has
+  // released the order on account.
+  if (transition.next === "PAID") {
+    const settlement = await getSettlement(orderId);
+    const blocked = blockingReason(settlement);
+    if (blocked) return { ok: false, error: blocked };
   }
 
   await prisma.$transaction([

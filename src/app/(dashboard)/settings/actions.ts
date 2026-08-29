@@ -39,7 +39,7 @@ const CreateUserSchema = z.object({
   name: z.string().min(1),
   email: z.string().email(),
   password: z.string().min(8),
-  role: z.enum(["CUSTOMER", "AGENT", "FINANCE", "WAREHOUSE", "DRIVER", "ADMIN"]),
+  role: z.enum(["CUSTOMER", "AGENT", "CASHIER", "FINANCE", "WAREHOUSE", "DRIVER", "ADMIN"]),
   customerId: z.string().optional(),
   isOwner: z.boolean().default(false),
   isWarehouseHead: z.boolean().default(false),
@@ -76,7 +76,7 @@ export async function createUser(input: z.infer<typeof CreateUserSchema>) {
 const UpdateUserSchema = z.object({
   id: z.string(),
   name: z.string().min(1),
-  role: z.enum(["CUSTOMER", "AGENT", "FINANCE", "WAREHOUSE", "DRIVER", "ADMIN"]),
+  role: z.enum(["CUSTOMER", "AGENT", "CASHIER", "FINANCE", "WAREHOUSE", "DRIVER", "ADMIN"]),
   customerId: z.string().optional().nullable(),
   active: z.boolean(),
   isOwner: z.boolean().default(false),

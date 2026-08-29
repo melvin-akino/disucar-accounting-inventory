@@ -5,9 +5,11 @@ import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { StatePill } from "@/components/ui/StatePill";
 import { fmtDateTime , num } from "@/lib/utils";
-import { NEXT_STATE, STATE_LABEL } from "@/types";
+import { nextTransition, STATE_LABEL } from "@/types";
 import type { OrderState } from "@prisma/client";
 import { OrderActions } from "./OrderActions";
+import { getSettlement } from "../actions";
+import { settlementView } from "@/lib/order-flow";
 import { OrderLinesEditor } from "./OrderLinesEditor";
 import { Attachments } from "@/components/Attachments";
 
@@ -43,8 +45,18 @@ export default async function OrderDetailPage({ params }: Props) {
     orderBy: { uploadedAt: "desc" },
   });
 
-  const transition = NEXT_STATE[order.state as OrderState];
-  const canManage = ["AGENT", "FINANCE", "WAREHOUSE", "ADMIN"].includes(role);
+  const settlementState = await getSettlement(order.id);
+  const settlementInfo = settlementView(settlementState);
+  const settlement = {
+    total: settlementState.total,
+    paid: settlementState.paid,
+    balance: settlementInfo.balance,
+    canRelease: settlementInfo.canRelease,
+    onAccount: settlementInfo.onAccount,
+  };
+
+  const transition = nextTransition(order.state as OrderState, order.channel);
+  const canManage = ["AGENT", "CASHIER", "FINANCE", "WAREHOUSE", "ADMIN"].includes(role);
   const canEditDiscount = ["FINANCE", "ADMIN"].includes(role) && !["DELIVERED", "CANCELLED"].includes(order.state);
   const blanketPct = order.customer.blanketDiscountPct ? Number(order.customer.blanketDiscountPct) : 0;
 
@@ -176,6 +188,7 @@ export default async function OrderDetailPage({ params }: Props) {
               transition={transition}
               currentRole={role}
               state={order.state as OrderState}
+              settlement={settlement}
             />
           )}
         </div>

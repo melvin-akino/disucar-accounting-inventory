@@ -250,6 +250,12 @@ async function main() {
     update: {},
     create: { email: "finance@disucarsales.ph", name: "F. Villanueva", passwordHash: pw, role: "FINANCE" as Role },
   });
+  await prisma.user.upsert({
+    where: { email: "cashier@disucarsales.ph" },
+    update: {},
+    create: { email: "cashier@disucarsales.ph", name: "C. Manalo", passwordHash: pw, role: "CASHIER" as Role },
+  });
+
   const agentUser = await prisma.user.upsert({
     where: { email: "agent@disucarsales.ph" },
     update: {},

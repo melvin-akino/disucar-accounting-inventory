@@ -7,7 +7,9 @@ import { InventoryClient } from "./InventoryClient";
 
 export default async function InventoryPage() {
   const session = await getServerSession(authOptions);
-  if (!session || !["WAREHOUSE", "ADMIN"].includes(session.user.role)) redirect("/orders");
+  // CASHIER and AGENT get read access: the counter has to answer "do we have it?" before
+  // taking an order. Every mutating action in inventory/actions.ts stays WAREHOUSE/ADMIN.
+  if (!session || !["WAREHOUSE", "ADMIN", "CASHIER", "AGENT"].includes(session.user.role)) redirect("/orders");
 
   const [stocks, moves, catalogItems, warehouses, lots] = await Promise.all([
     prisma.stock.findMany({

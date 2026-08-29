@@ -13,6 +13,9 @@ datasource db {
 enum Role {
   CUSTOMER
   AGENT
+  // Counter till: computes a retail order and takes payment. Deliberately narrower than
+  // FINANCE — a cashier cannot approve wholesale orders or post to the ledger.
+  CASHIER
   FINANCE
   WAREHOUSE
   DRIVER
@@ -44,6 +47,7 @@ model User {
   attachments  Attachment[]
   quotaOverrides Order[]   @relation("QuotaOverrideBy")
   creditHoldOverrides Order[] @relation("CreditHoldOverrideBy")
+  codReleases          Order[] @relation("CodReleasedBy")
   collections          Collection[] @relation("Collector")
   remittancesReceived  Collection[] @relation("RemittanceReceiver")
   vehiclesDriven       Vehicle[]
@@ -272,6 +276,11 @@ enum OrderChannel {
 enum OrderState {
   PENDING
   APPROVED
+  // Priced and awaiting settlement at the till. Stock is reserved on entry to this
+  // state, so a quantity promised to one customer cannot be promised to another.
+  AWAITING_PAYMENT
+  // Settled in full (or released COD by an Admin). The warehouse only picks from here.
+  PAID
   PREPARING
   SHIPPED
   DELIVERED
@@ -302,6 +311,13 @@ model Order {
   creditHoldOverrideReason String?
   creditHoldOverrideById   String?
   creditHoldOverrideAt     DateTime?
+  // Admin release of the pay-before-prepare rule: lets an order reach PAID on account
+  // (COD or terms) without settlement at the till. Recorded rather than implied, because
+  // it is the one way stock leaves the yard unpaid.
+  codRelease        Boolean   @default(false)
+  codReleaseReason  String?
+  codReleasedById   String?
+  codReleasedAt     DateTime?
   // Admin-only choice of which discount tier applied when this order was placed. Null
   // means no discount was configured/selected. Set once at creation for auditability.
   discountMode DiscountMode?
@@ -313,6 +329,7 @@ model Order {
   warehouse   Warehouse   @relation(fields: [warehouseId], references: [id])
   quotaOverrideBy User?  @relation("QuotaOverrideBy", fields: [quotaOverrideById], references: [id])
   creditHoldOverrideBy User? @relation("CreditHoldOverrideBy", fields: [creditHoldOverrideById], references: [id])
+  codReleasedBy   User?  @relation("CodReleasedBy", fields: [codReleasedById], references: [id])
   lines       OrderLine[]
   events      OrderEvent[]
   shipment    Shipment?

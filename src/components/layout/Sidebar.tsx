@@ -11,26 +11,26 @@ import type { OrgBrand } from "@/lib/org-settings";
 import { brand as staticBrand } from "@/lib/brand";
 
 const NAV_ITEMS: NavItem[] = [
-  { id: "dashboard", label: "Dashboard",      href: "/dashboard", icon: "home",          roles: ["AGENT", "FINANCE", "WAREHOUSE", "DRIVER", "ADMIN"] },
-  { id: "orders",    label: "Sales Orders",   href: "/orders",    icon: "shopping-cart", roles: ["AGENT", "FINANCE", "WAREHOUSE", "ADMIN", "CUSTOMER"] },
+  { id: "dashboard", label: "Dashboard",      href: "/dashboard", icon: "home",          roles: ["AGENT", "CASHIER", "FINANCE", "WAREHOUSE", "DRIVER", "ADMIN"] },
+  { id: "orders",    label: "Sales Orders",   href: "/orders",    icon: "shopping-cart", roles: ["AGENT", "CASHIER", "FINANCE", "WAREHOUSE", "ADMIN", "CUSTOMER"] },
   { id: "approvals", label: "Approvals",      href: "/approvals", icon: "check-square",  roles: ["FINANCE", "ADMIN"] },
   { id: "warehouse", label: "Warehouse",      href: "/warehouse", icon: "package",       roles: ["WAREHOUSE", "ADMIN"] },
   { id: "shipments", label: "Shipments",      href: "/shipments", icon: "truck",         roles: ["WAREHOUSE", "FINANCE", "ADMIN", "DRIVER"] },
   { id: "deliveries", label: "Delivery Runs", href: "/deliveries", icon: "truck",        roles: ["WAREHOUSE", "ADMIN"] },
   { id: "fleet",     label: "Fleet",          href: "/fleet",     icon: "map-pin",       roles: ["WAREHOUSE", "FINANCE", "ADMIN", "DRIVER"] },
   { id: "inbound",   label: "Purchase Orders",href: "/inbound",   icon: "inbox",         roles: ["WAREHOUSE", "FINANCE", "ADMIN"] },
-  { id: "inventory", label: "Inventory",      href: "/inventory", icon: "layers",        roles: ["WAREHOUSE", "ADMIN"] },
+  { id: "inventory", label: "Inventory",      href: "/inventory", icon: "layers",        roles: ["WAREHOUSE", "ADMIN", "CASHIER", "AGENT"] },
   { id: "quotes",    label: "Quotations",     href: "/quotes",    icon: "file-plus",     roles: ["AGENT", "FINANCE", "ADMIN"] },
   { id: "returns",   label: "Returns / RMA",  href: "/returns",   icon: "rotate-ccw",    roles: ["AGENT", "FINANCE", "WAREHOUSE", "ADMIN"] },
   { id: "collections", label: "Collections",  href: "/collections", icon: "user-circle", roles: ["AGENT", "DRIVER", "FINANCE", "ADMIN"] },
-  { id: "catalog",   label: "Catalog",        href: "/catalog",   icon: "grid",          roles: ["AGENT", "FINANCE", "ADMIN"] },
+  { id: "catalog",   label: "Catalog",        href: "/catalog",   icon: "grid",          roles: ["AGENT", "CASHIER", "FINANCE", "ADMIN"] },
   { id: "customers", label: "Customers",      href: "/customers", icon: "users",         roles: ["AGENT", "FINANCE", "ADMIN"] },
   { id: "suppliers", label: "Suppliers",      href: "/suppliers", icon: "briefcase",     roles: ["WAREHOUSE", "FINANCE", "ADMIN"] },
   { id: "ledger",    label: "Accounting",     href: "/ledger",    icon: "book-open",     roles: ["FINANCE", "ADMIN"] },
   { id: "reports",   label: "Reports",        href: "/reports",   icon: "bar-chart",     roles: ["FINANCE", "ADMIN"] },
   { id: "audit",     label: "Activity Log",   href: "/audit",     icon: "activity",      roles: ["FINANCE", "ADMIN"] },
   { id: "settings",  label: "Settings",       href: "/settings",  icon: "settings",      roles: ["ADMIN", "WAREHOUSE"] },
-  { id: "help",      label: "Help Center",    href: "/help",      icon: "help-circle",   roles: ["AGENT", "FINANCE", "WAREHOUSE", "DRIVER", "ADMIN", "CUSTOMER"] },
+  { id: "help",      label: "Help Center",    href: "/help",      icon: "help-circle",   roles: ["AGENT", "CASHIER", "FINANCE", "WAREHOUSE", "DRIVER", "ADMIN", "CUSTOMER"] },
 ];
 
 const ICON_PATHS: Record<string, string> = {
