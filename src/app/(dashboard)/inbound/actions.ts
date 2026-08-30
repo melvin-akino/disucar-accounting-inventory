@@ -196,11 +196,32 @@ export async function generateReorderPOs(warehouseId: string | "ALL") {
   for (const [supplierId, items] of Array.from(bySupplier)) {
     if (supplierId === "__none__") continue; // skip items with no supplier
 
-    const poId = genPoId() + `-R${created}`;
+    // genPoId() is async — concatenating it without awaiting produced the literal id
+    // "[object Promise]-R0", and the second reorder run then collided on the primary key.
+    const poId = `${await genPoId()}-R${created}`;
     const expectedDate = new Date();
     expectedDate.setDate(expectedDate.getDate() + 7); // default 7-day lead time
 
     const whId = items[0].warehouseId;
+
+    // Seed each line's cost from the most recent receipt of that SKU at this warehouse.
+    // Left at 0 the PO carried no cost, and receiving it created a free cost layer that
+    // FIFO would later consume at nothing — the reorder path silently poisoned costing.
+    const lineData = await Promise.all(
+      items.map(async (s) => {
+        const lastLot = await prisma.lot.findFirst({
+          where: { skuId: s.skuId, warehouseId: whId },
+          orderBy: { receivedAt: "desc" },
+          select: { unitCost: true },
+        });
+        return {
+          skuId: s.skuId,
+          qty: Math.max((s.maxLevel ?? s.reorderAt! * 2) - num(s.onHand), 1),
+          unitCost: num(lastLot?.unitCost),
+        };
+      })
+    );
+
     await prisma.inboundPO.create({
       data: {
         id: poId,
@@ -208,13 +229,8 @@ export async function generateReorderPOs(warehouseId: string | "ALL") {
         warehouseId: whId,
         expectedAt: expectedDate,
         status: "EXPECTED",
-        total: 0,
-        lines: {
-          create: items.map(s => ({
-            skuId: s.skuId,
-            qty: Math.max((s.maxLevel ?? s.reorderAt! * 2) - num(s.onHand), 1),
-          })),
-        },
+        total: lineData.reduce((sum, l) => sum + l.qty * l.unitCost, 0),
+        lines: { create: lineData },
       },
     });
     created++;

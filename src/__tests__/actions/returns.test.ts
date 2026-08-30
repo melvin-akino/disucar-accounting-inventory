@@ -142,13 +142,21 @@ describe("receiveReturn", () => {
     (prisma as any).returnRequest = {
       findUniqueOrThrow: vi.fn().mockResolvedValue(approvedReturn),
     };
-    // receiveReturn reads original order-line prices before opening its transaction.
+    // receiveReturn makes two reads before opening its transaction: the original selling
+    // prices for the credit note, then the frozen lot allocations for the cost reversal.
     (prisma as any).orderLine = {
-      findMany: vi.fn().mockResolvedValue([{ skuId: "SKU-1", unitPrice: 100 }]),
+      findMany: vi.fn()
+        .mockResolvedValueOnce([{ skuId: "SKU-1", unitPrice: 100 }])
+        .mockResolvedValueOnce([
+          { skuId: "SKU-1", lots: [{ qtyTaken: 5, costTotal: 350 }] }, // 70.00 each
+        ]),
+    };
+    (prisma as any).warehouse = {
+      findUniqueOrThrow: vi.fn().mockResolvedValue({ code: "MNL" }),
     };
     (prisma as any).journalEntry = { create: vi.fn().mockResolvedValue({}), count: vi.fn().mockResolvedValue(0) };
     (tx as any).journalEntry = { create: vi.fn().mockResolvedValue({}) };
-    (tx as any).lot = { upsert: vi.fn().mockResolvedValue({}) };
+    (tx as any).lot = { upsert: vi.fn().mockResolvedValue({}), create: vi.fn().mockResolvedValue({}) };
     (prisma as any).$transaction = vi.fn().mockImplementation((fn: any) => fn(tx));
     (prisma as any).__tx = tx; // expose for assertions
   });
@@ -164,9 +172,56 @@ describe("receiveReturn", () => {
   it("restocks when disposition is RESTOCK", async () => {
     const { receiveReturn } = await import("@/app/(dashboard)/returns/actions");
     await receiveReturn("RET-001", [{ id: "RL-1", qtyReceived: 3 }]);
-    const txFn = vi.mocked((prisma as any).$transaction).mock.calls[0][0];
-    // $transaction was called — verify it ran without throwing
     expect((prisma as any).$transaction).toHaveBeenCalledOnce();
+    expect((prisma as any).__tx.stock.upsert).toHaveBeenCalled();
+  });
+
+  it("restores the lot at the cost the goods were sold at", async () => {
+    const { receiveReturn } = await import("@/app/(dashboard)/returns/actions");
+    await receiveReturn("RET-001", [{ id: "RL-1", qtyReceived: 3 }]);
+    // 350.00 over 5 units = 70.00 each. Left unset this defaulted to 0 and returned
+    // goods became free inventory.
+    expect((prisma as any).__tx.lot.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ unitCost: 70 }) })
+    );
+  });
+
+  it("credits the customer and reverses COGS to the real accounts", async () => {
+    const { receiveReturn } = await import("@/app/(dashboard)/returns/actions");
+    await receiveReturn("RET-001", [{ id: "RL-1", qtyReceived: 3 }]);
+
+    const entries = vi.mocked((prisma as any).__tx.journalEntry.create).mock.calls;
+    expect(entries).toHaveLength(2);
+
+    // Credit note: 3 x 100 = 300 subtotal, 36 VAT, 336 off the receivable.
+    const creditLines = entries[0][0].data.lines.create;
+    expect(creditLines).toEqual([
+      { code: "4900", dr: 300, cr: 0 },
+      { code: "2100", dr: 36, cr: 0 },
+      { code: "1100", dr: 0, cr: 336 },
+    ]);
+
+    // Cost reversal: 3 x 70 = 210 back into inventory, out of COGS. Without this the
+    // goods sat on the shelf while their cost stayed in cost of sales.
+    const costLines = entries[1][0].data.lines.create;
+    expect(costLines).toEqual([
+      { code: "1200", dr: 210, cr: 0 },
+      { code: "5000", dr: 0, cr: 210 },
+    ]);
+  });
+
+  it("does not reverse cost for scrapped goods", async () => {
+    (prisma as any).returnRequest.findUniqueOrThrow = vi.fn().mockResolvedValue({
+      ...approvedReturn,
+      lines: [{ ...approvedReturn.lines[0], disposition: "SCRAP" }],
+    });
+    const { receiveReturn } = await import("@/app/(dashboard)/returns/actions");
+    await receiveReturn("RET-001", [{ id: "RL-1", qtyReceived: 3 }]);
+
+    // Scrapped goods never re-enter inventory, so the cost correctly stays in COGS —
+    // only the credit note is posted.
+    expect((prisma as any).__tx.journalEntry.create).toHaveBeenCalledOnce();
+    expect((prisma as any).__tx.stock.upsert).not.toHaveBeenCalled();
   });
 });
 

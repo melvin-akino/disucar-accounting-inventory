@@ -89,12 +89,19 @@ export async function submitPublicOrder(input: z.infer<typeof SubmitPublicOrderS
 
   const orderId = await nextCode("SO", (since) => prisma.order.count({ where: { createdAt: { gte: since } } }));
 
+  // Deliberately NOT routed through createOrder: that action requires a session and this
+  // endpoint is unauthenticated by design. The rules createOrder enforces are either
+  // already applied here or do not apply — prices are recomputed from the catalog above,
+  // the channel is fixed to RETAIL (a QR walk-in cannot self-serve wholesale tiers), and
+  // the order lands at PENDING, so it still passes through a cashier before any stock is
+  // reserved or picked. Lot selection is left to FIFO at fulfilment.
   const order = await prisma.order.create({
     data: {
       id: orderId,
       customerId: customer.id,
       agentId: agent.id,
       warehouseId: warehouse.id,
+      channel: "RETAIL",
       subtotal, vat, cwt, total,
       cwt2307: false,
       notes: data.address || null,

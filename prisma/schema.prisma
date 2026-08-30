@@ -853,6 +853,9 @@ model Quotation {
   agentId     String?
   warehouseId String
   status      QuoteStatus @default(DRAFT)
+  // Which price tier was quoted. Carried onto the order at conversion so a wholesale
+  // quote does not silently become a retail order.
+  channel     OrderChannel @default(RETAIL)
   validUntil  DateTime
   notes       String?
   subtotal    Decimal     @db.Decimal(14, 2)

@@ -1,6 +1,7 @@
 "use server";
 
 import { num } from "@/lib/utils";
+import { inventoryAccountFor } from "@/lib/coa";
 import { revalidatePath } from "next/cache";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
@@ -237,8 +238,12 @@ export async function writeOffLot(lotId: string, note: string) {
 
   const lot = await prisma.lot.findUniqueOrThrow({
     where: { id: lotId },
-    include: { sku: { select: { unitPrice: true, name: true } } },
+    include: {
+      sku: { select: { unitPrice: true, name: true } },
+      warehouse: { select: { code: true } },
+    },
   });
+  const inventoryCode = inventoryAccountFor(lot.warehouse.code);
 
   if (lot.status === "WRITTEN_OFF") throw new Error("Lot is already written off");
   if (num(lot.remainingQty) <= 0) throw new Error("Lot has no remaining quantity to write off");
@@ -287,8 +292,12 @@ export async function writeOffLot(lotId: string, note: string) {
           postedById: session.user.id,
           lines: {
             create: [
-              { code: "5001", dr: lossValue, cr: 0          }, // Loss on inventory write-off
-              { code: "1300", dr: 0,          cr: lossValue  }, // Merchandise inventory
+              // 5800 Inventory Shrinkage / B.O. Write-off, and the warehouse's own
+              // inventory asset. These previously posted to 5001 and 1300: 5001 is not
+              // in the chart of accounts at all, and 1300 is Prepaid Expenses — so the
+              // loss never reached an expense account and inventory was never relieved.
+              { code: "5800",         dr: lossValue, cr: 0         },
+              { code: inventoryCode,  dr: 0,         cr: lossValue },
             ],
           },
         },

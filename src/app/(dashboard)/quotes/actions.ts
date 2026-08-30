@@ -5,10 +5,11 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { z } from "zod";
-import { orderTotal } from "@/lib/utils";
+import { orderTotal, num } from "@/lib/utils";
 import { sendQuoteEmail } from "@/lib/email";
 import type { QuoteStatus } from "@prisma/client";
 import { nextCode } from "@/lib/ids";
+import { createOrder } from "../orders/actions";
 
 const LineSchema = z.object({
   skuId: z.string().min(1),
@@ -178,34 +179,30 @@ export async function convertToOrder(quoteId: string) {
     throw new Error("Only SENT or ACCEPTED quotations can be converted to orders");
   }
 
-  const orderId = await nextCode("SO", (since) => prisma.order.count({ where: { createdAt: { gte: since } } }));
+  // Route through createOrder rather than writing the order directly. Building the row
+  // here bypassed every rule the order path enforces — channel and wholesale pricing,
+  // minimum quantities, lot planning — so a quotation was a way in around all of them.
+  const orderId = await createOrder({
+    customerId: quote.customerId,
+    warehouseId: quote.warehouseId,
+    cwt2307: quote.cwt2307,
+    notes: quote.notes ?? undefined,
+    channel: quote.channel,
+    lines: quote.lines.map((l) => ({
+      skuId: l.skuId,
+      qty: num(l.qty),
+      unitPrice: num(l.unitPrice),
+      isFree: false,
+    })),
+  });
 
   await prisma.$transaction([
-    prisma.order.create({
+    prisma.orderEvent.create({
       data: {
-        id: orderId,
-        customerId: quote.customerId,
-        agentId: session.user.id,
-        warehouseId: quote.warehouseId,
-        subtotal: quote.subtotal,
-        vat: quote.vat,
-        cwt: quote.cwt,
-        total: quote.total,
-        cwt2307: quote.cwt2307,
-        notes: quote.notes,
-        lines: {
-          create: quote.lines.map(l => ({
-            skuId: l.skuId,
-            name: l.name,
-            unit: l.unit,
-            qty: l.qty,
-            unitPrice: l.unitPrice,
-            lineTotal: l.lineTotal,
-          })),
-        },
-        events: {
-          create: { state: "PENDING", actorId: session.user.id, note: `Created from quotation ${quoteId}` },
-        },
+        orderId,
+        state: "PENDING",
+        actorId: session.user.id,
+        note: `Created from quotation ${quoteId}`,
       },
     }),
     prisma.quotation.update({
