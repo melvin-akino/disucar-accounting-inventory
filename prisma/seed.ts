@@ -301,56 +301,163 @@ async function main() {
   }
 
   // ── Sample orders ─────────────────────────────────────────────────────────
+  // The two order paths, so a seeded order carries the history it would really have.
+  // An order sitting at PREPARING must have been priced, settled and released — landing
+  // it there with a single "Seeded" event would misrepresent how it got past the till.
+  const RETAIL_PATH = ["PENDING", "AWAITING_PAYMENT", "PAID", "PREPARING", "SHIPPED", "DELIVERED"];
+  const WHOLESALE_PATH = ["PENDING", "APPROVED", "AWAITING_PAYMENT", "PAID", "PREPARING", "SHIPPED", "DELIVERED"];
+
+  const STEP_NOTE: Record<string, string> = {
+    PENDING:          "Order created",
+    APPROVED:         "Approved by Admin",
+    AWAITING_PAYMENT: "Computed at the till",
+    PAID:             "Paid in full at the till",
+    PREPARING:        "Picking started",
+    SHIPPED:          "Dispatched",
+    DELIVERED:        "Delivery confirmed",
+  };
+
   async function upsertOrder(
     id: string, custId: string, whId: string,
     state: string, cwt2307: boolean,
-    lines: { sku: string; qty: number; unitPrice: number }[]
+    lines: { sku: string; qty: number; unitPrice: number }[],
+    channel: "RETAIL" | "WHOLESALE" = "RETAIL"
   ) {
     const subtotal = lines.reduce((s, l) => s + l.qty * l.unitPrice, 0);
     const vat = subtotal * 0.12;
     const cwt = cwt2307 ? subtotal * 0.02 : 0;
-    const total = subtotal + vat - cwt;
+    const total = Math.round((subtotal + vat - cwt) * 100) / 100;
 
     const exists = await prisma.order.findUnique({ where: { id } });
-    if (!exists) {
-      await prisma.order.create({
+    if (exists) return;
+
+    const path = channel === "WHOLESALE" ? WHOLESALE_PATH : RETAIL_PATH;
+    const reached = path.slice(0, path.indexOf(state) + 1);
+    if (reached.length === 0) throw new Error(`${id}: ${state} is not on the ${channel} path`);
+
+    // Oldest event first, one per step actually walked.
+    const events = reached.map((s, i) => ({
+      state: s,
+      actorId: adminUser.id,
+      note: STEP_NOTE[s] ?? s,
+      createdAt: daysAgo(reached.length - i),
+    }));
+
+    await prisma.order.create({
+      data: {
+        id, customerId: custId, agentId: adminUser.id, warehouseId: whId,
+        state: state as any, channel: channel as any, cwt2307, subtotal, vat, cwt, total,
+        lines: {
+          create: lines.map((l) => {
+            const item = catMap[l.sku];
+            return { skuId: item.id, name: item.name, unit: item.unit, qty: l.qty, unitPrice: l.unitPrice, lineTotal: l.qty * l.unitPrice };
+          }),
+        },
+        events: { create: events },
+      },
+    });
+
+    // Anything at or past PAID was settled at the till, so it needs the invoice and
+    // payment that settling produces — otherwise the order shows as paid while the
+    // customer ledger shows nothing received.
+    if (reached.includes("PAID")) {
+      const invoiceId = `INV-${id.slice(-4)}`;
+      const paidAt = daysAgo(reached.length - reached.indexOf("PAID"));
+      const due = new Date(paidAt);
+      due.setDate(due.getDate() + 30);
+
+      const vatPortion = Math.round(total * (12 / 112) * 100) / 100;
+      const revPortion = Math.round((total - vatPortion) * 100) / 100;
+
+      await prisma.invoice.create({
         data: {
-          id, customerId: custId, agentId: adminUser.id, warehouseId: whId,
-          state: state as any, cwt2307, subtotal, vat, cwt, total,
-          lines: {
-            create: lines.map((l) => {
-              const item = catMap[l.sku];
-              return { skuId: item.id, name: item.name, unit: item.unit, qty: l.qty, unitPrice: l.unitPrice, lineTotal: l.qty * l.unitPrice };
-            }),
+          id: invoiceId, customerId: custId, soId: id,
+          issued: paidAt, due, amount: total, paid: total, status: "PAID" as InvoiceStatus,
+          payments: {
+            create: { amount: total, paymentType: "CASH", recordedById: adminUser.id },
           },
-          events: { create: { state, actorId: adminUser.id, note: "Seeded" } },
         },
       });
+
+      // The same pair of entries takeOrderPayment posts: the sale, then the receipt.
+      // Without these the order reads as paid while the ledger shows no revenue.
+      await prisma.journalEntry.create({
+        data: {
+          id: `JE-${id.slice(-4)}-AR`, date: paidAt, source: "AR" as JeSource, ref: id,
+          memo: `Invoice ${invoiceId} — counter sale`, postedById: financeUser.id,
+          lines: { create: [
+            { code: "1100", dr: total, cr: 0 },
+            { code: "4000", dr: 0, cr: revPortion },
+            { code: "2100", dr: 0, cr: vatPortion },
+          ] },
+        },
+      });
+      await prisma.journalEntry.create({
+        data: {
+          id: `JE-${id.slice(-4)}-CA`, date: paidAt, source: "BANK" as JeSource, ref: invoiceId,
+          memo: `Payment received — ${invoiceId}`, postedById: financeUser.id,
+          lines: { create: [
+            { code: "1000", dr: total, cr: 0 },
+            { code: "1100", dr: 0, cr: total },
+          ] },
+        },
+      });
+    }
+
+    // In-flight orders hold their stock reserved; reservation happens at the till, so
+    // anything from AWAITING_PAYMENT up to SHIPPED is holding quantity it has not yet
+    // consumed. DELIVERED has already drawn its stock down.
+    if (state !== "PENDING" && state !== "APPROVED" && state !== "DELIVERED") {
+      for (const l of lines) {
+        const item = catMap[l.sku];
+        // A truck size holds no stock of its own — reserve against the pile it draws from.
+        const targetId = item.bulkSourceId ?? item.id;
+        const qty = item.bulkSourceId ? l.qty * Number(item.bulkVolumeM3 ?? 0) : l.qty;
+        await prisma.stock.updateMany({
+          where: { skuId: targetId, warehouseId: whId },
+          data: { reserved: { increment: qty } },
+        });
+      }
     }
   }
 
   // Each item is priced in its own trading unit: cement by the bag, rebar by the length,
   // aggregates by the cubic metre, and truck sizes by the load.
-  await upsertOrder("SO-2026-0418", customers[0].id, mnl.id, "PENDING",   false, [{ sku: "CEM-PORT-40",  qty: 120, unitPrice: 265.00 }, { sku: "RSB-12-6M",  qty: 80, unitPrice: 265.00 }]);
-  await upsertOrder("SO-2026-0417", customers[1].id, mnl.id, "APPROVED",  false, [{ sku: "CHB-6",        qty: 800, unitPrice: 26.00 },  { sku: "CEM-MASON-40", qty: 60, unitPrice: 240.00 }]);
+  // Spread across both paths so every stage of the flow has something to look at:
+  // a wholesale order waiting on Admin approval, one priced and sitting at the till,
+  // and settled orders moving through the yard.
+
+  // Wholesale, awaiting Admin approval — priced at the wholesale tier.
+  await upsertOrder("SO-2026-0418", customers[0].id, mnl.id, "PENDING", false,
+    [{ sku: "CEM-PORT-40", qty: 120, unitPrice: 245.00 }, { sku: "RSB-12-6M", qty: 80, unitPrice: 248.00 }], "WHOLESALE");
+
+  // Wholesale, approved and now waiting on the customer to settle at the till.
+  await upsertOrder("SO-2026-0417", customers[1].id, mnl.id, "AWAITING_PAYMENT", false,
+    [{ sku: "CHB-6", qty: 800, unitPrice: 22.50 }, { sku: "CEM-MASON-40", qty: 60, unitPrice: 224.00 }], "WHOLESALE");
+
+  // Retail counter sale, settled and released to the warehouse.
   // Three mini-trucks of sand: one line of qty 3 drawing 7.5 m³ from the pile.
-  await upsertOrder("SO-2026-0416", customers[2].id, ceb.id, "PREPARING", false, [{ sku: "MT-SAND",      qty: 3,   unitPrice: 3930.00 }]);
-  await upsertOrder("SO-2026-0415", customers[3].id, mnl.id, "SHIPPED",   false, [{ sku: "PLY-MARINE-12", qty: 24, unitPrice: 890.00 }, { sku: "LUM-COCO-2X3", qty: 40, unitPrice: 165.00 }]);
+  await upsertOrder("SO-2026-0416", customers[2].id, ceb.id, "PREPARING", false,
+    [{ sku: "MT-SAND", qty: 3, unitPrice: 3930.00 }]);
+
+  await upsertOrder("SO-2026-0415", customers[3].id, mnl.id, "SHIPPED", false,
+    [{ sku: "PLY-MARINE-12", qty: 24, unitPrice: 890.00 }, { sku: "LUM-COCO-2X3", qty: 40, unitPrice: 165.00 }]);
+
+  // Retail, paid and picked but not yet started — the warehouse's next job.
+  await upsertOrder("SO-2026-0414", customers[5].id, mnl.id, "PAID", false,
+    [{ sku: "CHB-4", qty: 300, unitPrice: 18.00 }, { sku: "CWN-4", qty: 10, unitPrice: 88.00 }]);
+
   // Bulk aggregate bought by volume rather than by the truck.
-  await upsertOrder("SO-2026-0413", customers[4].id, dvo.id, "DELIVERED", false, [{ sku: "AGG-CRUSH-34", qty: 12,  unitPrice: 1550.00 }]);
-  await upsertOrder("SO-2026-0412", customers[7].id, mnl.id, "DELIVERED", false, [{ sku: "CEM-PORT-40",  qty: 200, unitPrice: 265.00 }]);
+  await upsertOrder("SO-2026-0413", customers[4].id, dvo.id, "DELIVERED", false,
+    [{ sku: "AGG-CRUSH-34", qty: 12, unitPrice: 1430.00 }], "WHOLESALE");
+
+  await upsertOrder("SO-2026-0412", customers[7].id, mnl.id, "DELIVERED", false,
+    [{ sku: "CEM-PORT-40", qty: 200, unitPrice: 265.00 }]);
 
   // ── Accounting seed ───────────────────────────────────────────────────────
   // Journal entries
   const jeData = [
     // ── AR: base orders (case-priced) ──────────────────────────────────────
-    { id: "JE-2026-05-0418", date: hoursAgo(1),   source: "AR" as JeSource, ref: "INV-2026-0418", memo: "Sale to Bautista Construction",                    lines: [{ code: "1100", dr: 19272.96, cr: 0 }, { code: "4000", dr: 0, cr: 17208.00 }, { code: "2100", dr: 0, cr: 2064.96 }] },
-    { id: "JE-2026-05-0417", date: hoursAgo(3),   source: "AR" as JeSource, ref: "INV-2026-0417", memo: "Sale to Pangasinan Builders Supply",                   lines: [{ code: "1100", dr: 22444.80, cr: 0 }, { code: "4000", dr: 0, cr: 20040.00 }, { code: "2100", dr: 0, cr: 2404.80 }] },
-    { id: "JE-2026-05-0416a", date: daysAgo(6),   source: "AR" as JeSource, ref: "INV-2026-0416", memo: "Sale to Sison Hardware",                     lines: [{ code: "1100", dr: 10967.04, cr: 0 }, { code: "4000", dr: 0, cr: 9792.00 },  { code: "2100", dr: 0, cr: 1175.04 }] },
-    { id: "JE-2026-05-0416b", date: daysAgo(1),   source: "BANK" as JeSource, ref: "INV-2026-0416", memo: "Partial payment received — Sison Hardware", lines: [{ code: "1010", dr: 5000.00,  cr: 0 }, { code: "1100", dr: 0, cr: 5000.00 }] },
-    { id: "JE-2026-05-0413a", date: daysAgo(9),   source: "AR" as JeSource, ref: "INV-2026-0413", memo: "Sale to Villaflor Aggregates Trading — delivered", lines: [{ code: "1100", dr: 40857.60, cr: 0 }, { code: "4000", dr: 0, cr: 36480.00 }, { code: "2100", dr: 0, cr: 4377.60 }, { code: "5000", dr: 25536.00, cr: 0 }, { code: "1220", dr: 0, cr: 25536.00 }] },
-    { id: "JE-2026-05-0413b", date: daysAgo(2),   source: "BANK" as JeSource, ref: "INV-2026-0413", memo: "Payment received — Villaflor Aggregates Trading", lines: [{ code: "1010", dr: 40857.60, cr: 0 }, { code: "1100", dr: 0, cr: 40857.60 }] },
-    { id: "JE-2026-05-0412", date: daysAgo(4),    source: "AR" as JeSource, ref: "INV-2026-0412", memo: "Sale to CSI Infrastructure Builders — delivered",           lines: [{ code: "1100", dr: 11289.60, cr: 0 }, { code: "4000", dr: 0, cr: 10080.00 }, { code: "2100", dr: 0, cr: 1209.60 }, { code: "5000", dr: 7056.00, cr: 0 }, { code: "1200", dr: 0, cr: 7056.00 }] },
     // ── AR: due-for-payment showcase ────────────────────────────────────────
     { id: "JE-2026-05-DUE01", date: daysAgo(28),  source: "AR" as JeSource, ref: "INV-DUE-01",   memo: "Sale to Reyes Engineering Works",                      lines: [{ code: "1100", dr: 15000.00, cr: 0 }, { code: "4000", dr: 0, cr: 13392.86 }, { code: "2100", dr: 0, cr: 1607.14 }] },
     { id: "JE-2026-05-DUE02", date: daysAgo(29),  source: "AR" as JeSource, ref: "INV-DUE-02",   memo: "Sale to Dela Cruz Homebuilders",             lines: [{ code: "1100", dr: 8500.00,  cr: 0 }, { code: "4000", dr: 0, cr: 7589.29 },  { code: "2100", dr: 0, cr: 910.71 }] },
@@ -364,7 +471,7 @@ async function main() {
     { id: "JE-2026-04-0412", date: hoursAgo(38),  source: "PAYROLL" as JeSource, ref: "PAY-2026-04-30", memo: "Bi-monthly payroll · 60 employees",     lines: [{ code: "5100", dr: 1820000, cr: 0 }, { code: "1020", dr: 0, cr: 1488800 }, { code: "2160", dr: 0, cr: 196000 }, { code: "2200", dr: 0, cr: 78400 }, { code: "2210", dr: 0, cr: 32200 }, { code: "2220", dr: 0, cr: 24600 }] },
     { id: "JE-2026-04-0411", date: hoursAgo(48),  source: "AP" as JeSource, ref: "BILL-MERALCO-04", memo: "Meralco — April electricity",                lines: [{ code: "5300", dr: 187500, cr: 0 }, { code: "2110", dr: 22500, cr: 0 }, { code: "2000", dr: 0, cr: 210000 }] },
     { id: "JE-2026-04-0410", date: hoursAgo(56),  source: "AP" as JeSource, ref: "BILL-MAYNILAD-04", memo: "Maynilad water — April",                   lines: [{ code: "5300", dr: 38400, cr: 0 }, { code: "2110", dr: 4608, cr: 0 }, { code: "2000", dr: 0, cr: 43008 }] },
-    { id: "JE-2026-04-0408", date: hoursAgo(96),  source: "AP" as JeSource, ref: "PO-2026-0297",  memo: "PO receipt — Pag-asa Steel Works",            lines: [{ code: "1210", dr: 171428, cr: 0 }, { code: "2110", dr: 20571, cr: 0 }, { code: "2000", dr: 0, cr: 192000 }] },
+    { id: "JE-2026-04-0408", date: hoursAgo(96),  source: "AP" as JeSource, ref: "PO-2026-0297",  memo: "PO receipt — Pag-asa Steel Works",            lines: [{ code: "1210", dr: 171428.57, cr: 0 }, { code: "2110", dr: 20571.43, cr: 0 }, { code: "2000", dr: 0, cr: 192000 }] },
     { id: "JE-2026-04-0407", date: daysAgo(5),    source: "GL" as JeSource, ref: "DEPR-2026-04",  memo: "Monthly depreciation — delivery trucks & warehouse equipment", lines: [{ code: "5500", dr: 142000, cr: 0 }, { code: "1510", dr: 0, cr: 142000 }] },
     { id: "JE-2026-04-0405", date: daysAgo(12),   source: "GL" as JeSource, ref: "ADJ-RENT-04",   memo: "Reclass prepaid rent April",                    lines: [{ code: "5200", dr: 240000, cr: 0 }, { code: "1300", dr: 0, cr: 240000 }] },
   ];
@@ -385,18 +492,13 @@ async function main() {
   // Invoices (AR) — recomputed for case-based pricing.
   const invData = [
     // Base orders
-    { id: "INV-2026-0418", custCode: "C-2001", soId: "SO-2026-0418", issued: hoursAgo(1),  due: daysFromNow(30), amount: 19272.96, paid: 0,        status: "OPEN"    as InvoiceStatus },
-    { id: "INV-2026-0417", custCode: "C-2002", soId: "SO-2026-0417", issued: hoursAgo(3),  due: daysFromNow(30), amount: 22444.80, paid: 0,        status: "OPEN"    as InvoiceStatus },
-    { id: "INV-2026-0416", custCode: "C-2003", soId: "SO-2026-0416", issued: daysAgo(6),   due: daysFromNow(24), amount: 10967.04, paid: 5000,     status: "PARTIAL" as InvoiceStatus },
-    { id: "INV-2026-0413", custCode: "C-2005", soId: "SO-2026-0413", issued: daysAgo(9),   due: daysFromNow(21), amount: 40857.60, paid: 40857.60, status: "PAID"    as InvoiceStatus },
     // CSI Infrastructure Builders — 2 paid invoices ready for collection (collected in the field,
     // pending remittance to Finance — see Collection seeding below)
-    { id: "INV-2026-0412", custCode: "C-2008", soId: "SO-2026-0412", issued: daysAgo(4),   due: daysFromNow(26), amount: 11289.60, paid: 11289.60, status: "PAID"    as InvoiceStatus },
     { id: "INV-CSI-02",    custCode: "C-2008", soId: null,           issued: daysAgo(5),   due: daysFromNow(25), amount: 9450.00,  paid: 9450.00,  status: "PAID"    as InvoiceStatus },
     // Due for payment
     { id: "INV-DUE-01",    custCode: "C-2004", soId: null,           issued: daysAgo(28),  due: daysFromNow(2),  amount: 15000.00, paid: 0,        status: "OPEN"    as InvoiceStatus },
     { id: "INV-DUE-02",    custCode: "C-2006", soId: null,           issued: daysAgo(29),  due: daysFromNow(1),  amount: 8500.00,  paid: 0,        status: "OPEN"    as InvoiceStatus },
-    // Bautista Construction — 2 pending unpaid invoices (this one + INV-2026-0418 above)
+    // Bautista Construction — a second unpaid invoice alongside its pending wholesale order
     { id: "INV-BCD-02",    custCode: "C-2001", soId: null,           issued: daysAgo(10),  due: daysFromNow(20), amount: 22000.00, paid: 0,        status: "OPEN"    as InvoiceStatus },
   ];
 
@@ -415,11 +517,11 @@ async function main() {
     });
   }
 
-  // Field collections — CSI Infrastructure Builders's 2 invoices above are fully paid by the
-  // customer but the cash is still with the field agent, awaiting remittance to
+  // Field collections — CSI Infrastructure Builders paid two invoices in full, but the
+  // cash is still with the field agent, awaiting remittance to
   // Finance (Collection.status stays PENDING until recordRemittance is called).
   const collectionData = [
-    { id: "COL-CSI-01", invoiceId: "INV-2026-0412", amount: 11289.60, collectedAt: daysAgo(1) },
+    { id: "COL-CSI-01", invoiceId: "INV-0412",   amount: 59360.00, collectedAt: daysAgo(1) },
     { id: "COL-CSI-02", invoiceId: "INV-CSI-02",    amount: 9450.00,  collectedAt: daysAgo(1) },
   ];
 
