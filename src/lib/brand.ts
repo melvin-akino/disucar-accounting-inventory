@@ -4,7 +4,7 @@
  */
 export const brand = {
   name:    process.env.NEXT_PUBLIC_ORG_NAME    ?? "Disucar Sales Inc",
-  tagline: process.env.NEXT_PUBLIC_ORG_TAGLINE ?? "Grocery & FMCG Distribution",
+  tagline: process.env.NEXT_PUBLIC_ORG_TAGLINE ?? "Construction Materials & Aggregates",
   address: process.env.NEXT_PUBLIC_ORG_ADDRESS ?? "3F Greenfield Tower, Mandaluyong City, Metro Manila 1550",
   phone:   process.env.NEXT_PUBLIC_ORG_PHONE   ?? "+63 2 8123 4567",
   email:   process.env.NEXT_PUBLIC_ORG_EMAIL   ?? "info@disucarsales.ph",

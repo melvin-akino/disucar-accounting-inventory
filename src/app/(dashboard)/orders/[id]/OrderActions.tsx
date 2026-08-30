@@ -215,7 +215,14 @@ export function OrderActions({ orderId, transition, currentRole, state, settleme
             disabled={isPending}
             className="btn btn-accent justify-center"
           >
-            {isPending ? "Processing…" : transition.label}
+            {isPending
+              ? "Processing…"
+              : /* At AWAITING_PAYMENT this button only appears once the order is
+                   releasable. If it got there on an Admin's account release rather than
+                   on money received, "Take payment" would describe the wrong action. */
+                state === "AWAITING_PAYMENT" && settlement.onAccount
+                ? "Send to warehouse (on account)"
+                : transition.label}
           </button>
         )}
         {canCancel && !showCancel && (

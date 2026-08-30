@@ -429,7 +429,7 @@ async function main() {
 
   // Wholesale, awaiting Admin approval — priced at the wholesale tier.
   await upsertOrder("SO-2026-0418", customers[0].id, mnl.id, "PENDING", false,
-    [{ sku: "CEM-PORT-40", qty: 120, unitPrice: 245.00 }, { sku: "RSB-12-6M", qty: 80, unitPrice: 248.00 }], "WHOLESALE");
+    [{ sku: "CEM-PORT-40", qty: 120, unitPrice: 245.00 }, { sku: "RSB-12-6M", qty: 100, unitPrice: 248.00 }], "WHOLESALE");
 
   // Wholesale, approved and now waiting on the customer to settle at the till.
   await upsertOrder("SO-2026-0417", customers[1].id, mnl.id, "AWAITING_PAYMENT", false,

@@ -433,8 +433,14 @@ export async function takeOrderPayment(
     );
   }
 
+  // Two entries are posted in one transaction, so their ids must be reserved with
+  // distinct sequence numbers. jeId() derives the sequence from a row count, and neither
+  // row exists yet — calling it twice returns the SAME id and the insert fails on the
+  // primary key. The second call is offset by the entry the first will occupy.
   const salesJeId = needsInvoice ? await jeId() : null;
-  const cashJeId = await jeId();
+  const cashJeId = await nextCode("JE", async (since) =>
+    (await prisma.journalEntry.count({ where: { createdAt: { gte: since } } })) + (needsInvoice ? 1 : 0)
+  );
   const newPaid = Math.round((settlement.paid + amount) * 100) / 100;
   const settled = total - newPaid <= 0.01;
   const paymentType = details?.paymentType ?? "CASH";

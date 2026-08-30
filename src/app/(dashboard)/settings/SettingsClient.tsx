@@ -527,7 +527,7 @@ function BrandingTab({ initial }: { initial: OrgBrand }) {
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
         <BrandingField label="Organisation Name *"  value={form.name}    placeholder="Disucar Sales Inc"                    onChange={v => set("name", v)} />
-        <BrandingField label="Tagline *"             value={form.tagline} placeholder="Grocery & FMCG Distribution"      onChange={v => set("tagline", v)} />
+        <BrandingField label="Tagline *"             value={form.tagline} placeholder="Construction Materials & Aggregates"      onChange={v => set("tagline", v)} />
       </div>
       <BrandingField label="Registered Address *" value={form.address} placeholder="3F Tower, City, Metro Manila"        onChange={v => set("address", v)} />
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>

@@ -4,7 +4,7 @@ import Link from "next/link";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { StatePill } from "@/components/ui/StatePill";
-import { fmtDateTime , num } from "@/lib/utils";
+import { fmtDateTime, num, peso } from "@/lib/utils";
 import { nextTransition, STATE_LABEL } from "@/types";
 import type { OrderState } from "@prisma/client";
 import { OrderActions } from "./OrderActions";
@@ -83,6 +83,16 @@ export default async function OrderDetailPage({ params }: Props) {
         <Link href="/orders" className="btn btn-ghost btn-sm">← Orders</Link>
         <h1 className="text-[17px] font-semibold flex-1">{order.id}</h1>
         <StatePill state={order.state as OrderState} />
+        {/* An order released on account sits in PAID with money still outstanding.
+            Saying only "Paid" would misrepresent it to anyone reading the order. */}
+        {settlement.onAccount && (
+          <span
+            title={`${peso(settlement.balance)} still outstanding`}
+            style={{ fontSize: 11.5, fontWeight: 600, padding: "2px 8px", borderRadius: 999, background: "oklch(0.94 0.05 65)", color: "oklch(0.38 0.11 55)" }}
+          >
+            on account · {peso(settlement.balance)} due
+          </span>
+        )}
         <Link href={`/print/order/${order.id}`} target="_blank" className="btn btn-sm">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
           Print

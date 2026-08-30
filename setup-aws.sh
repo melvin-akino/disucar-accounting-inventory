@@ -221,7 +221,7 @@ ask SSL_EMAIL   "Email for Let's Encrypt (required if domain set)"      "admin@e
 echo ""
 echo -e "  ${BOLD}Branding / Organisation${NC}"
 ask ORG_NAME     "Organisation name"       "Disucar Sales Inc"
-ask ORG_TAGLINE  "Tagline"                 "Grocery & FMCG Distribution"
+ask ORG_TAGLINE  "Tagline"                 "Construction Materials & Aggregates"
 ask ORG_ADDRESS  "Address"                 "3F Greenfield Tower, Mandaluyong City, Metro Manila 1550"
 ask ORG_PHONE    "Phone"                   "+63 2 8123 4567"
 ask ORG_EMAIL    "Email"                   "info@disucarsales.ph"
