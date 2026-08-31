@@ -228,7 +228,11 @@ async function main() {
             skuId: item.id,
             warehouseId: wh.id,
             receivedQty: received[i],
-            remainingQty: remaining[i] / 2,
+            // Must sum to the warehouse's onHand above, or the stock row and its cost
+            // layers disagree from the first day — the exact drift transfers and
+            // adjustments used to cause. Halving these left every SKU carrying twice the
+            // quantity its lots could account for.
+            remainingQty: remaining[i],
             unitCost: Math.round(layers[i] * 10000) / 10000,
             receivedAt: daysAgo(i === 0 ? 21 : 7),
           },
