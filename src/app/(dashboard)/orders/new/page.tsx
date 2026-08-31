@@ -7,7 +7,7 @@ import { NewOrderForm } from "./NewOrderForm";
 
 export default async function NewOrderPage() {
   const session = await getServerSession(authOptions);
-  if (!session || !["AGENT", "ADMIN", "CUSTOMER"].includes(session.user.role)) redirect("/orders");
+  if (!session || !["AGENT", "CASHIER", "ADMIN", "CUSTOMER"].includes(session.user.role)) redirect("/orders");
 
   const isCustomer = session.user.role === "CUSTOMER";
 

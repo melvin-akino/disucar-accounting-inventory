@@ -139,6 +139,73 @@ export default async function DashboardPage() {
   }
 
   // ── AGENT ─────────────────────────────────────────────────────────────────
+  // ── CASHIER ───────────────────────────────────────────────────────────────
+  // The till queue: everything waiting on the counter, oldest first. A retail order
+  // arrives at PENDING for the cashier to price; a wholesale one arrives at APPROVED,
+  // already past its Admin gate. AWAITING_PAYMENT is money still to collect.
+  if (role === "CASHIER") {
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+
+    const [queue, todaysPayments, awaitingCount] = await Promise.all([
+      prisma.order.findMany({
+        where: {
+          OR: [
+            { state: "PENDING", channel: "RETAIL" },
+            { state: "APPROVED" },
+            { state: "AWAITING_PAYMENT" },
+          ],
+        },
+        orderBy: { createdAt: "asc" },
+        take: 25,
+        select: {
+          id: true, state: true, channel: true, total: true, createdAt: true,
+          customer: { select: { name: true } },
+          invoices: { select: { payments: { select: { amount: true } } } },
+        },
+      }),
+      // What this cashier has taken today — the drawer figure they are accountable for.
+      prisma.payment.aggregate({
+        where: { recordedById: session.user.id, createdAt: { gte: startOfDay } },
+        _sum: { amount: true },
+        _count: { _all: true },
+      }),
+      prisma.order.count({ where: { state: "AWAITING_PAYMENT" } }),
+    ]);
+
+    const queueRows = queue.map((o) => {
+      const paid = o.invoices
+        .flatMap((i) => i.payments)
+        .reduce((s, p) => s + num(p.amount), 0);
+      return {
+        id: o.id,
+        state: o.state,
+        channel: o.channel,
+        customerName: o.customer.name,
+        total: num(o.total),
+        // Only meaningful once priced; a PENDING order has taken nothing yet.
+        due: Math.round((num(o.total) - paid) * 100) / 100,
+        createdAt: o.createdAt.toISOString(),
+      };
+    });
+
+    return (
+      <DashboardClient
+        role="CASHIER"
+        tillQueue={queueRows}
+        tillStats={{
+          toPrice: queueRows.filter((r) => r.state !== "AWAITING_PAYMENT").length,
+          toCollect: awaitingCount,
+          dueTotal: queueRows
+            .filter((r) => r.state === "AWAITING_PAYMENT")
+            .reduce((s, r) => s + r.due, 0),
+          takenToday: num(todaysPayments._sum.amount),
+          paymentsToday: todaysPayments._count._all,
+        }}
+      />
+    );
+  }
+
   if (role === "AGENT") {
     const agentId = session.user.id;
     const startOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1);

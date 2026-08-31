@@ -11,6 +11,11 @@ interface JeRow { id: string; date: string; source: JeSource; memo: string; amou
 interface StockAlert { name: string; warehouse: string; onHand: number; reorderAt: number }
 interface ShipmentRow { id: string; orderId: string; customerName: string; trackingNumber: string | null; eta: string | null; total: number }
 
+interface TillRow {
+  id: string; state: string; channel: string; customerName: string;
+  total: number; due: number; createdAt: string;
+}
+
 interface MonthlyPoint { month: string; revenue: number; orders: number }
 
 interface ExpiryLot { id: string; lotNumber: string; skuName: string; warehouseName: string; remainingQty: number; expiryDate: string }
@@ -37,13 +42,23 @@ interface Props {
   morningActivity?: MorningActivityRow[];
   // agent
   agentStats?: { total: number; pending: number; thisMonth: number; customers: number };
+  // cashier
+  tillQueue?: TillRow[];
+  tillStats?: {
+    toPrice: number;
+    toCollect: number;
+    dueTotal: number;
+    takenToday: number;
+    paymentsToday: number;
+  };
   // driver
   myShipments?: ShipmentRow[];
 }
 
 // ── Shared primitives ─────────────────────────────────────────────────────────
 const ORDER_COLOR: Record<string, string> = {
-  PENDING:"oklch(0.55 0.13 240)", APPROVED:"oklch(0.55 0.14 290)", PREPARING:"oklch(0.55 0.12 80)",
+  PENDING:"oklch(0.55 0.13 240)", APPROVED:"oklch(0.55 0.14 290)",
+  AWAITING_PAYMENT:"oklch(0.58 0.14 55)", PAID:"oklch(0.50 0.11 175)", PREPARING:"oklch(0.55 0.12 80)",
   SHIPPED:"oklch(0.45 0.14 200)", DELIVERED:"oklch(0.45 0.13 145)", CANCELLED:"oklch(0.55 0.10 25)",
 };
 const SOURCE_COLOR: Record<string, string> = {
@@ -477,6 +492,92 @@ function AgentDashboard({ agentStats, recentOrders=[], orderPipeline=[] }: Props
   );
 }
 
+// ── CASHIER view ──────────────────────────────────────────────────────────────
+/**
+ * The counter's work queue.
+ *
+ * One list, oldest first, of everything waiting on the till: retail orders to price,
+ * wholesale orders already approved by an Admin, and priced orders still to collect.
+ * A cashier previously had to scan the whole order list to find their own work, with
+ * no way to see what was owed without opening each order.
+ */
+function CashierDashboard({ tillQueue = [], tillStats }: Props) {
+  const s = tillStats ?? { toPrice: 0, toCollect: 0, dueTotal: 0, takenToday: 0, paymentsToday: 0 };
+
+  const stateLabel: Record<string, string> = {
+    PENDING: "To price",
+    APPROVED: "To price",
+    AWAITING_PAYMENT: "To collect",
+  };
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <h1 style={{ fontSize: 17, fontWeight: 600 }}>Till</h1>
+          <p style={{ fontSize: 12, color: "oklch(var(--ink-3))" }}>
+            Counter queue · {fmtDate(new Date().toISOString())}
+          </p>
+        </div>
+        <Link href="/orders/new" className="btn btn-accent">+ New Sale</Link>
+      </div>
+
+      <div className="stat-grid mb-4">
+        <KpiCard label="To price" value={String(s.toPrice)} sub="Waiting to be computed" href="/orders?state=PENDING" />
+        <KpiCard label="To collect" value={String(s.toCollect)} sub="Priced, awaiting payment" warn={s.toCollect > 0} href="/orders?state=AWAITING_PAYMENT" />
+        <KpiCard label="Outstanding" value={peso(s.dueTotal)} sub="Across orders at the till" accent="oklch(0.55 0.14 25)" />
+        <KpiCard label="Taken today" value={peso(s.takenToday)} sub={`${s.paymentsToday} payment${s.paymentsToday === 1 ? "" : "s"}`} accent="oklch(0.55 0.13 145)" />
+      </div>
+
+      <div className="card">
+        <div className="card-head">
+          <span className="card-h">Queue</span>
+          <span style={{ fontSize: 12, marginLeft: "auto", color: "oklch(var(--ink-3))" }}>
+            {tillQueue.length} order{tillQueue.length === 1 ? "" : "s"} · oldest first
+          </span>
+        </div>
+        <div className="tbl-wrap" style={{ border: 0, borderRadius: 0 }}>
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th>Order</th>
+                <th>Customer</th>
+                <th>Channel</th>
+                <th>Status</th>
+                <th className="num">Total</th>
+                <th className="num">Due</th>
+              </tr>
+            </thead>
+            <tbody>
+              {tillQueue.length === 0 && (
+                <tr><td colSpan={6} className="dim" style={{ padding: "14px 8px", fontSize: 12.5 }}>
+                  Nothing waiting at the till.
+                </td></tr>
+              )}
+              {tillQueue.map((o) => (
+                <tr key={o.id}>
+                  <td className="id" style={{ fontWeight: 600 }}>
+                    <Link href={`/orders/${o.id}`}>{o.id}</Link>
+                  </td>
+                  <td style={{ fontWeight: 500 }}>{o.customerName}</td>
+                  <td className="dim">{o.channel === "WHOLESALE" ? "Wholesale" : "Retail"}</td>
+                  <td>{stateLabel[o.state] ?? o.state}</td>
+                  <td className="num">{peso(o.total)}</td>
+                  <td className="num" style={o.state === "AWAITING_PAYMENT" && o.due > 0 ? { color: "#dc2626", fontWeight: 600 } : undefined}>
+                    {/* An order still to be priced has collected nothing yet — showing its
+                        total as "due" would imply it had already reached the till. */}
+                    {o.state === "AWAITING_PAYMENT" ? peso(o.due) : "—"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── WAREHOUSE view ────────────────────────────────────────────────────────────
 function WarehouseDashboard({ orderPipeline=[], lowStockCount=0, lowStockItems=[], recentOrders=[], nearExpiryLots=[] }: Props) {
   const toProcess = orderPipeline.find(o=>o.state==="APPROVED")?.count ?? 0;
@@ -570,6 +671,7 @@ export function DashboardClient(props: Props) {
   switch (props.role) {
     case "FINANCE":    return <FinanceDashboard    {...props} />;
     case "AGENT":      return <AgentDashboard      {...props} />;
+    case "CASHIER":    return <CashierDashboard    {...props} />;
     case "WAREHOUSE":  return <WarehouseDashboard  {...props} />;
     case "DRIVER":     return <DriverDashboard     {...props} />;
     default:           return <AdminDashboard      {...props} />;

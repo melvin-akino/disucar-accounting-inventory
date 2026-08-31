@@ -32,6 +32,12 @@
     --st-pending-fg:  oklch(0.42 0.020 250);
     --st-approved-bg: oklch(0.94 0.030 240);
     --st-approved-fg: oklch(0.40 0.10  240);
+    /* Awaiting payment sits at the till — amber, the same family as "needs attention".
+       Paid is settled but not yet picked, so it reads calmer than Delivered. */
+    --st-await-bg:    oklch(0.96 0.045 55);
+    --st-await-fg:    oklch(0.45 0.13  45);
+    --st-paid-bg:     oklch(0.95 0.035 175);
+    --st-paid-fg:     oklch(0.38 0.09  175);
     --st-prep-bg:     oklch(0.95 0.040 75);
     --st-prep-fg:     oklch(0.45 0.10  65);
     --st-ship-bg:     oklch(0.94 0.030 285);
@@ -296,6 +302,8 @@
   }
   .pill-PENDING   { background: var(--st-pending-bg);  color: var(--st-pending-fg); }
   .pill-APPROVED  { background: var(--st-approved-bg); color: var(--st-approved-fg); }
+  .pill-AWAITING_PAYMENT { background: var(--st-await-bg); color: var(--st-await-fg); }
+  .pill-PAID      { background: var(--st-paid-bg);     color: var(--st-paid-fg); }
   .pill-PREPARING { background: var(--st-prep-bg);     color: var(--st-prep-fg); }
   .pill-SHIPPED   { background: var(--st-ship-bg);     color: var(--st-ship-fg); }
   .pill-DELIVERED { background: var(--st-deliv-bg);    color: var(--st-deliv-fg); }
@@ -747,6 +755,10 @@
   --st-pending-fg:  oklch(0.70 0.015 250);
   --st-approved-bg: oklch(0.17 0.025 240);
   --st-approved-fg: oklch(0.72 0.08  240);
+  --st-await-bg:    oklch(0.19 0.035 55);
+  --st-await-fg:    oklch(0.78 0.11  55);
+  --st-paid-bg:     oklch(0.17 0.028 175);
+  --st-paid-fg:     oklch(0.74 0.09  175);
   --st-prep-bg:     oklch(0.18 0.030 75);
   --st-prep-fg:     oklch(0.75 0.10  75);
   --st-ship-bg:     oklch(0.17 0.025 285);
