@@ -2,6 +2,10 @@
 
 import Link from "next/link";
 import { peso, shortPeso, fmtDate } from "@/lib/utils";
+import { useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
+import { useToast } from "@/components/ui/Toast";
+import { closeShift } from "./shift-actions";
 import type { JeSource, OrderState } from "@prisma/client";
 import type { Role } from "@prisma/client";
 
@@ -43,6 +47,18 @@ interface Props {
   // agent
   agentStats?: { total: number; pending: number; thisMonth: number; customers: number };
   // cashier
+  currentShift?: {
+    id: string;
+    openedAt: string;
+    cashierName: string;
+    zRead: {
+      expectedCash: number;
+      nonCashTotal: number;
+      totalTaken: number;
+      paymentCount: number;
+      byTender: { tender: string; label: string; count: number; amount: number }[];
+    };
+  } | null;
   tillQueue?: TillRow[];
   tillStats?: {
     toPrice: number;
@@ -501,7 +517,134 @@ function AgentDashboard({ agentStats, recentOrders=[], orderPipeline=[] }: Props
  * A cashier previously had to scan the whole order list to find their own work, with
  * no way to see what was owed without opening each order.
  */
-function CashierDashboard({ tillQueue = [], tillStats }: Props) {
+/**
+ * The Z-read: what the session took, and whether the drawer agrees.
+ *
+ * Cash is shown apart from the other tenders because it is the only figure the cashier
+ * can physically verify — a bank transfer cannot be short in the till.
+ */
+function ShiftCard({ shift }: { shift: NonNullable<Props["currentShift"]> }) {
+  const { toast } = useToast();
+  const router = useRouter();
+  const [isPending, startTransition] = useTransition();
+  const [open, setOpen] = useState(false);
+  const [counted, setCounted] = useState("");
+  const [note, setNote] = useState("");
+
+  const z = shift.zRead;
+  const countedNum = parseFloat(counted);
+  const variance = Number.isFinite(countedNum) ? Math.round((countedNum - z.expectedCash) * 100) / 100 : null;
+
+  function submit() {
+    startTransition(async () => {
+      try {
+        const res = await closeShift(parseFloat(counted), note || undefined);
+        if (!res.ok) { toast(res.error, "error"); return; }
+        toast(
+          Math.abs(res.shift.variance) < 0.01
+            ? "Till closed — drawer balances"
+            : `Till closed — ${res.shift.variance > 0 ? "over" : "short"} by ${peso(Math.abs(res.shift.variance))}`,
+          Math.abs(res.shift.variance) < 0.01 ? "success" : "info"
+        );
+        setOpen(false);
+        setCounted("");
+        setNote("");
+        router.refresh();
+      } catch (e) {
+        toast((e as Error).message, "error");
+      }
+    });
+  }
+
+  return (
+    <div className="card" style={{ marginBottom: 16 }}>
+      <div className="card-head">
+        <span className="card-h">Till session</span>
+        <span style={{ fontSize: 11.5, marginLeft: "auto", color: "oklch(var(--ink-3))" }}>
+          open since {new Date(shift.openedAt).toLocaleString("en-PH", { hour: "2-digit", minute: "2-digit", day: "numeric", month: "short" })}
+          {" · "}{z.paymentCount} payment{z.paymentCount === 1 ? "" : "s"}
+        </span>
+      </div>
+      <div className="card-body" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        <div style={{ display: "flex", gap: 24, flexWrap: "wrap" }}>
+          <div>
+            <div style={{ fontSize: 11, color: "oklch(var(--ink-3))", textTransform: "uppercase" }}>Cash in drawer (expected)</div>
+            <div style={{ fontWeight: 600, fontSize: 15 }}>{peso(z.expectedCash)}</div>
+          </div>
+          <div>
+            <div style={{ fontSize: 11, color: "oklch(var(--ink-3))", textTransform: "uppercase" }}>Other tenders</div>
+            <div style={{ fontWeight: 600 }}>{peso(z.nonCashTotal)}</div>
+          </div>
+          <div>
+            <div style={{ fontSize: 11, color: "oklch(var(--ink-3))", textTransform: "uppercase" }}>Total taken</div>
+            <div style={{ fontWeight: 600 }}>{peso(z.totalTaken)}</div>
+          </div>
+        </div>
+
+        {z.byTender.length > 0 && (
+          <div style={{ display: "flex", gap: 12, flexWrap: "wrap", fontSize: 11.5, color: "oklch(var(--ink-3))" }}>
+            {z.byTender.map((t) => (
+              <span key={t.tender}>{t.label}: <strong>{peso(t.amount)}</strong> ({t.count})</span>
+            ))}
+          </div>
+        )}
+
+        {!open ? (
+          <button className="btn btn-sm" style={{ alignSelf: "flex-start" }} onClick={() => setOpen(true)}>
+            Close till (Z-read)
+          </button>
+        ) : (
+          <div style={{ padding: "10px 12px", borderRadius: 7, background: "oklch(var(--bg-2))", border: "1px solid oklch(var(--line))", display: "flex", flexDirection: "column", gap: 8 }}>
+            <p style={{ fontSize: 11.5, color: "oklch(var(--ink-3))" }}>
+              Count the cash in the drawer and enter it. Only cash is compared — other
+              tenders never sit in the till.
+            </p>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+              <div>
+                <label className="field-label">Cash counted</label>
+                <input
+                  className="field-input" type="number" min="0" step="0.01"
+                  style={{ textAlign: "right" }}
+                  value={counted} onChange={(e) => setCounted(e.target.value)} placeholder="0.00"
+                />
+              </div>
+              <div>
+                <label className="field-label">Variance</label>
+                <div style={{
+                  padding: "7px 10px", fontWeight: 600,
+                  color: variance === null ? "oklch(var(--ink-3))" : Math.abs(variance) < 0.01 ? "oklch(0.40 0.09 155)" : "#dc2626",
+                }}>
+                  {variance === null
+                    ? "—"
+                    : Math.abs(variance) < 0.01
+                      ? "Balances"
+                      : `${variance > 0 ? "Over" : "Short"} ${peso(Math.abs(variance))}`}
+                </div>
+              </div>
+            </div>
+            <input
+              className="field-input" placeholder="Note (optional) — e.g. why the drawer is short"
+              value={note} onChange={(e) => setNote(e.target.value)}
+            />
+            <div style={{ display: "flex", gap: 6 }}>
+              <button className="btn flex-1" style={{ justifyContent: "center" }} onClick={() => setOpen(false)}>Cancel</button>
+              <button
+                className="btn btn-accent flex-1"
+                style={{ justifyContent: "center" }}
+                disabled={isPending || counted === ""}
+                onClick={submit}
+              >
+                {isPending ? "Closing…" : "Confirm close"}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CashierDashboard({ tillQueue = [], tillStats, currentShift }: Props) {
   const s = tillStats ?? { toPrice: 0, toCollect: 0, dueTotal: 0, takenToday: 0, paymentsToday: 0 };
 
   const stateLabel: Record<string, string> = {
@@ -521,6 +664,8 @@ function CashierDashboard({ tillQueue = [], tillStats }: Props) {
         </div>
         <Link href="/orders/new" className="btn btn-accent">+ New Sale</Link>
       </div>
+
+      {currentShift && <ShiftCard shift={currentShift} />}
 
       <div className="stat-grid mb-4">
         <KpiCard label="To price" value={String(s.toPrice)} sub="Waiting to be computed" href="/orders?state=PENDING" />

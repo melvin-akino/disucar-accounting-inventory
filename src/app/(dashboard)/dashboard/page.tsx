@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { computeTrialBalance } from "@/lib/coa";
 import { getMorningWindow , num } from "@/lib/utils";
 import { DashboardClient } from "./DashboardClient";
+import { getCurrentShift } from "./shift-actions";
 import type { Role } from "@prisma/client";
 
 export default async function DashboardPage() {
@@ -189,9 +190,12 @@ export default async function DashboardPage() {
       };
     });
 
+    const currentShift = await getCurrentShift();
+
     return (
       <DashboardClient
         role="CASHIER"
+        currentShift={currentShift}
         tillQueue={queueRows}
         tillStats={{
           toPrice: queueRows.filter((r) => r.state !== "AWAITING_PAYMENT").length,

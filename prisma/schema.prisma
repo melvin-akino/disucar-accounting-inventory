@@ -55,6 +55,8 @@ model User {
   deliveryRunsAsDriver  DeliveryRun[] @relation("DeliveryRunDriver")
   deliveryRunsAsChecker DeliveryRun[] @relation("DeliveryRunCheckedBy")
   paymentsRecorded      Payment[]
+  shifts                CashierShift[] @relation("ShiftCashier")
+  shiftsClosed          CashierShift[] @relation("ShiftClosedBy")
   relieverAssignmentsAsOriginal RelieverAssignment[] @relation("RelieverOriginal")
   relieverAssignmentsAsReliever RelieverAssignment[] @relation("RelieverSubstitute")
 
@@ -789,6 +791,34 @@ model Bill {
   @@map("bills")
 }
 
+// A cashier's till session, from first payment taken to the moment they cash up.
+//
+// Opens implicitly on the first payment rather than requiring the cashier to remember
+// a "start shift" step — a forgotten open would otherwise block the counter. Closing is
+// explicit and irreversible: it records the counted drawer against what the system says
+// was taken, so a variance is stated at the moment it can still be explained.
+model CashierShift {
+  id          String    @id @default(cuid())
+  cashierId   String
+  openedAt    DateTime  @default(now())
+  closedAt    DateTime?
+  // Cash the system expected in the drawer, and what the cashier actually counted.
+  // Both frozen at close; variance is derived but stored so a later price or payment
+  // correction cannot silently rewrite a signed-off reading.
+  expectedCash Decimal? @db.Decimal(14, 2)
+  countedCash  Decimal? @db.Decimal(14, 2)
+  variance     Decimal? @db.Decimal(14, 2)
+  note         String?
+  closedById   String?
+
+  cashier     User      @relation("ShiftCashier", fields: [cashierId], references: [id])
+  closedBy    User?     @relation("ShiftClosedBy", fields: [closedById], references: [id])
+  payments    Payment[]
+
+  @@index([cashierId, closedAt])
+  @@map("cashier_shifts")
+}
+
 enum PaymentType {
   CASH
   CHECK
@@ -809,11 +839,16 @@ model Payment {
   transferDate DateTime?
   referenceNo  String?
   recordedById String
+  // The till session this payment belongs to. Null for payments taken outside the
+  // counter (Finance recording against an invoice, field collections), which are not
+  // part of any drawer and must not appear on a Z-read.
+  shiftId      String?
   createdAt    DateTime    @default(now())
 
   invoice      Invoice? @relation(fields: [invoiceId], references: [id])
   bill         Bill?    @relation(fields: [billId], references: [id])
   recordedBy   User     @relation(fields: [recordedById], references: [id])
+  shift        CashierShift? @relation(fields: [shiftId], references: [id])
 
   @@map("payments")
 }

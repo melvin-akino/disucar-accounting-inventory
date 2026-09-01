@@ -21,6 +21,7 @@ import {
 } from "@/lib/order-logic";
 import { writeAudit } from "@/lib/audit";
 import { settlementView, validatePayment, blockingReason, type SettlementState } from "@/lib/order-flow";
+import { ensureOpenShift } from "../dashboard/shift-actions";
 import { resolveStockDraw } from "@/lib/bulk";
 import { inventoryAccountFor, COGS_ACCOUNT } from "@/lib/coa";
 import { resolveUnitPrice, checkWholesaleMinimums, formatViolations, canApprove } from "@/lib/wholesale";
@@ -420,6 +421,9 @@ export async function takeOrderPayment(
   const check = validatePayment(amount, settlement);
   if (!check.ok) return { ok: false, error: check.error! };
 
+  // Opens the cashier's till session if this is their first payment of the shift.
+  const shiftId = await ensureOpenShift(session.user.id);
+
   const total = num(order.total);
   const vatPortion = Math.round(total * (12 / 112) * 100) / 100;
   const revPortion = Math.round((total - vatPortion) * 100) / 100;
@@ -494,6 +498,9 @@ export async function takeOrderPayment(
         bankName: details?.bankName || null,
         referenceNo: details?.referenceNo || null,
         recordedById: session.user.id,
+        // Ties the payment to the till session it was taken in, so a Z-read covers
+        // exactly this cashier's drawer and nothing else.
+        shiftId,
       },
     });
 
@@ -524,6 +531,7 @@ export async function takeOrderPayment(
   });
 
   revalidatePath("/orders");
+  revalidatePath("/dashboard");
   revalidatePath(`/orders/${orderId}`);
   revalidatePath("/ledger");
   return { ok: true, settled };
@@ -582,6 +590,7 @@ export async function releaseOrderOnAccount(
   });
 
   revalidatePath("/orders");
+  revalidatePath("/dashboard");
   revalidatePath(`/orders/${orderId}`);
   return { ok: true };
 }
@@ -673,6 +682,9 @@ export async function advanceOrderState(
   revalidatePath("/orders");
   revalidatePath(`/orders/${orderId}`);
   revalidatePath("/inventory");
+  // Advancing an order moves it into or out of the till queue and the warehouse board,
+  // both of which live on /dashboard.
+  revalidatePath("/dashboard");
 
   return { ok: true };
 }
