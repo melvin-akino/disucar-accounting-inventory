@@ -28,6 +28,7 @@ interface Quote {
   vat: number | string;
   cwt: number | string;
   cwt2307: boolean;
+  channel?: string;
   total: number | string;
   orderId: string | null;
   createdAt: Date | string;
@@ -80,6 +81,7 @@ function QuoteFormModal({
       new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10)
   );
   const [cwt2307, setCwt2307] = useState(initial?.cwt2307 ?? false);
+  const [channel, setChannel] = useState<"RETAIL" | "WHOLESALE">((initial?.channel as "RETAIL" | "WHOLESALE") ?? "RETAIL");
   const [notes, setNotes] = useState(initial?.notes ?? "");
   const [lines, setLines] = useState<FormLine[]>(
     initial?.lines.map(l => ({ skuId: l.skuId, qty: l.qty, unitPrice: Number(l.unitPrice) })) ??
@@ -114,13 +116,15 @@ function QuoteFormModal({
     }
     startTransition(async () => {
       try {
-        const payload = { customerId, warehouseId, validUntil, cwt2307, notes, lines };
+        const payload = { customerId, warehouseId, validUntil, cwt2307, notes, channel, lines };
         if (initial) {
-          await updateQuote(initial.id, payload);
+          const res = await updateQuote(initial.id, payload);
+          if ("error" in res) { toast(res.error, "error"); return; }
           toast(`Quotation ${initial.id} updated`, "success");
         } else {
-          const id = await createQuote(payload);
-          toast(`Quotation ${id} created`, "success");
+          const res = await createQuote(payload);
+          if ("error" in res) { toast(res.error, "error"); return; }
+          toast(`Quotation ${res.id} created`, "success");
         }
         router.refresh();
         onClose();
@@ -159,6 +163,27 @@ function QuoteFormModal({
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 20 }}>
               <input type="checkbox" id="cwt-q" checked={cwt2307} onChange={e => setCwt2307(e.target.checked)} className="w-3.5 h-3.5" />
               <label htmlFor="cwt-q" className="text-[12.5px]" style={{ color: "oklch(var(--ink-2))" }}>Apply BIR Form 2307 (−2% CWT)</label>
+            </div>
+            <div style={{ gridColumn: "span 2" }}>
+              <label className="field-label">Sales Channel</label>
+              <div style={{ display: "flex", gap: 8 }}>
+                {(["RETAIL", "WHOLESALE"] as const).map(c => (
+                  <button
+                    key={c}
+                    type="button"
+                    className={`btn btn-sm${channel === c ? " btn-primary" : ""}`}
+                    onClick={() => setChannel(c)}
+                  >
+                    {c === "RETAIL" ? "Retail" : "Wholesale"}
+                  </button>
+                ))}
+              </div>
+              {channel === "WHOLESALE" && (
+                <p style={{ fontSize: 11.5, color: "oklch(var(--ink-3))", marginTop: 6 }}>
+                  Wholesale prices are taken from the catalog and minimum quantities apply,
+                  so the quote converts into an order an Admin can actually approve.
+                </p>
+              )}
             </div>
             <div style={{ gridColumn: "span 2" }}>
               <label className="field-label">Notes</label>

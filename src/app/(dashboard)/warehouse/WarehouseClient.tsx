@@ -26,13 +26,13 @@ interface Props {
 }
 
 const COL_LABEL: Record<string, string> = {
-  APPROVED:  "Approved",
+  PAID:      "Ready to pick",
   PREPARING: "Preparing",
-  SHIPPED:   "Shipped",
+  SHIPPED:   "Dispatched",
 };
 
 const COL_DOT: Record<string, string> = {
-  APPROVED:  "oklch(0.55 0.15 240)",
+  PAID:      "oklch(0.50 0.11 175)",
   PREPARING: "oklch(0.55 0.15 75)",
   SHIPPED:   "oklch(0.55 0.15 285)",
 };
@@ -102,7 +102,7 @@ export function WarehouseClient({ orders, role, vehicles }: Props) {
 
   const COLS = role === "FINANCE"
     ? ["SHIPPED"]
-    : ["APPROVED", "PREPARING", "SHIPPED"];
+    : ["PAID", "PREPARING", "SHIPPED"];
 
   return (
     <>
@@ -137,7 +137,7 @@ export function WarehouseClient({ orders, role, vehicles }: Props) {
                     <div className="text-[11px]" style={{ color: "oklch(var(--ink-4))" }}>{order.warehouse.name} · {fmtDate(new Date(order.createdAt))}</div>
 
                     <div className="mt-1">
-                      {col === "APPROVED" && (
+                      {col === "PAID" && (
                         <button
                           onClick={() => handlePrepare(order.id)}
                           disabled={isBusy || isPending}
@@ -154,7 +154,7 @@ export function WarehouseClient({ orders, role, vehicles }: Props) {
                           className="btn btn-sm btn-accent w-full"
                           style={{ justifyContent: "center" }}
                         >
-                          {isBusy ? "…" : "🚚 Mark Shipped"}
+                          {isBusy ? "…" : "🚚 Dispatch"}
                         </button>
                       )}
                       {col === "SHIPPED" && ["WAREHOUSE", "ADMIN"].includes(role) && (

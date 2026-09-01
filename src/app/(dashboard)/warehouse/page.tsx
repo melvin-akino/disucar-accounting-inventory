@@ -5,7 +5,11 @@ import { prisma } from "@/lib/prisma";
 import { WarehouseClient } from "./WarehouseClient";
 import type { OrderState } from "@prisma/client";
 
-const COLS: OrderState[] = ["APPROVED", "PREPARING", "SHIPPED"];
+// Warehouse work starts at PAID. APPROVED now means a wholesale order that has
+// cleared its Admin gate but is still at the till, which the yard cannot act on —
+// showing it here gave the warehouse a column of orders it could do nothing with,
+// while its real queue (PAID) was missing from the board entirely.
+const COLS: OrderState[] = ["PAID", "PREPARING", "SHIPPED"];
 
 export default async function WarehousePage() {
   const session = await getServerSession(authOptions);
