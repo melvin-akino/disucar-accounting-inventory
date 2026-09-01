@@ -2,11 +2,12 @@
 
 import { useRouter, useSearchParams } from "next/navigation";
 import { useState, useTransition } from "react";
-import type { ReportData, ReportType, SalesRow, ArAgingRow, InventoryRow, PoSummaryRow, PlRow, LotExpiryRow, LotTraceRow, InventoryLotRow, UnbalancedCollectionRow, AgentAuditSaleRow, AgentAuditReturnRow, AgentAuditActivityRow } from "./page";
+import type { ReportData, ReportType, SalesRow, MarginRow, ArAgingRow, InventoryRow, PoSummaryRow, PlRow, LotExpiryRow, LotTraceRow, InventoryLotRow, UnbalancedCollectionRow, AgentAuditSaleRow, AgentAuditReturnRow, AgentAuditActivityRow } from "./page";
 import { HelpButton } from "@/components/HelpButton";
 
 const REPORT_TYPES: { value: ReportType; label: string; desc: string }[] = [
   { value: "SALES",        label: "Sales Summary",       desc: "Revenue by month, top customers" },
+  { value: "MARGIN",       label: "Gross Margin",        desc: "Revenue vs FIFO cost of goods sold" },
   { value: "AR_AGING",     label: "AR Aging",            desc: "Outstanding receivables by age bucket" },
   { value: "INVENTORY",    label: "Inventory Snapshot",  desc: "Current stock levels by SKU & warehouse" },
   { value: "PO_SUMMARY",   label: "PO Summary",          desc: "Purchase orders by supplier & status" },
@@ -19,7 +20,7 @@ const REPORT_TYPES: { value: ReportType; label: string; desc: string }[] = [
 ];
 
 const SHOW_DATE: Record<ReportType, boolean> = {
-  SALES: true, AR_AGING: false, INVENTORY: false, PO_SUMMARY: true, PL: true,
+  SALES: true, MARGIN: true, AR_AGING: false, INVENTORY: false, PO_SUMMARY: true, PL: true,
   LOT_EXPIRY: true, LOT_TRACE: false, INVENTORY_LOT: false, UNBALANCED_COLLECTIONS: false,
   AGENT_AUDIT: true,
 };
@@ -154,6 +155,79 @@ function UnbalancedCollectionsTable({ rows }: { rows: UnbalancedCollectionRow[] 
 
 function fmtDT(iso: string) {
   return new Date(iso).toLocaleString("en-PH", { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+/** Margin colours: healthy, thin, or selling below cost. */
+function marginTone(pct: number): string {
+  if (pct < 0) return "#dc2626";
+  if (pct < 10) return "#d97706";
+  return "oklch(0.40 0.09 155)";
+}
+
+function MarginTable({ title, rows, firstCol }: { title: string; rows: MarginRow[]; firstCol: string }) {
+  return (
+    <div>
+      <div style={{ fontSize: 12, fontWeight: 600, color: "oklch(var(--ink-3))", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 }}>{title}</div>
+      {rows.length === 0 ? <p className="empty-state" style={{ padding: "16px 0" }}>Nothing to show.</p> : (
+        <div className="tbl-wrap"><table className="tbl">
+          <thead><tr>
+            <Th>{firstCol}</Th><Th right>Qty</Th><Th right>Revenue</Th><Th right>COGS</Th>
+            <Th right>Gross Profit</Th><Th right>Margin</Th>
+          </tr></thead>
+          <tbody>{rows.map((r) => (
+            <tr key={r.key}>
+              <Td>{r.label}</Td>
+              <Td right>{r.qty.toLocaleString()}</Td>
+              <Td right>{peso(r.revenue)}</Td>
+              <Td right>{peso(r.cogs)}</Td>
+              <Td right>{peso(r.grossProfit)}</Td>
+              <td className="num" style={{ color: marginTone(r.marginPct), fontWeight: 600 }}>
+                {r.marginPct.toFixed(1)}%
+              </td>
+            </tr>
+          ))}</tbody>
+        </table></div>
+      )}
+    </div>
+  );
+}
+
+function MarginView({ data }: { data?: ReportData["margin"] }) {
+  if (!data) return <p className="empty-state" style={{ padding: "32px 0" }}>No data.</p>;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
+      <div style={{ display: "flex", gap: 24, flexWrap: "wrap" }}>
+        <div><div style={{ fontSize: 11, color: "oklch(var(--ink-3))", textTransform: "uppercase" }}>Revenue</div><div style={{ fontWeight: 600 }}>{peso(data.totalRevenue)}</div></div>
+        <div><div style={{ fontSize: 11, color: "oklch(var(--ink-3))", textTransform: "uppercase" }}>Cost of goods sold</div><div style={{ fontWeight: 600 }}>{peso(data.totalCogs)}</div></div>
+        <div><div style={{ fontSize: 11, color: "oklch(var(--ink-3))", textTransform: "uppercase" }}>Gross profit</div><div style={{ fontWeight: 600 }}>{peso(data.totalGrossProfit)}</div></div>
+        <div>
+          <div style={{ fontSize: 11, color: "oklch(var(--ink-3))", textTransform: "uppercase" }}>Margin</div>
+          <div style={{ fontWeight: 600, color: marginTone(data.marginPct) }}>{data.marginPct.toFixed(1)}%</div>
+        </div>
+        <div><div style={{ fontSize: 11, color: "oklch(var(--ink-3))", textTransform: "uppercase" }}>Orders</div><div style={{ fontWeight: 600 }}>{data.ordersCounted}</div></div>
+      </div>
+
+      <p style={{ fontSize: 11.5, color: "oklch(var(--ink-3))" }}>
+        Delivered orders only. Cost is the FIFO cost each line actually bore at delivery,
+        so a line drawn from two receipts carries both — not the product&apos;s current price.
+        {data.uncostedLines > 0 && (
+          <>
+            {" "}
+            <strong style={{ color: "#d97706" }}>
+              {data.uncostedLines} delivered line{data.uncostedLines === 1 ? " has" : "s have"} no
+              cost allocation and {data.uncostedLines === 1 ? "is" : "are"} excluded
+            </strong>{" "}
+            — these predate FIFO costing, and counting them would overstate margin.
+          </>
+        )}
+      </p>
+
+      <MarginTable title="By month" rows={data.byMonth} firstCol="Month" />
+      <MarginTable title="By product" rows={data.byProduct} firstCol="Product" />
+      <MarginTable title="Top customers by gross profit" rows={data.byCustomer} firstCol="Customer" />
+    </div>
+  );
 }
 
 function AgentAuditView({ data, agentName }: {
@@ -738,6 +812,14 @@ export function ReportsClient({ data }: { data: ReportData }) {
             <div className="stat-card"><div className="stat-label">Top Customer</div><div className="stat-value" style={{ fontSize: 13 }}>{data.sales?.byCustomer[0]?.name ?? "—"}</div></div>
           </>
         )}
+        {data.type === "MARGIN" && (
+          <>
+            <div className="stat-card"><div className="stat-label">Revenue</div><div className="stat-value" style={{ fontFamily: "monospace" }}>{peso(data.margin?.totalRevenue ?? 0)}</div></div>
+            <div className="stat-card"><div className="stat-label">Cost of Goods Sold</div><div className="stat-value" style={{ fontFamily: "monospace" }}>{peso(data.margin?.totalCogs ?? 0)}</div></div>
+            <div className="stat-card"><div className="stat-label">Gross Profit</div><div className="stat-value" style={{ fontFamily: "monospace" }}>{peso(data.margin?.totalGrossProfit ?? 0)}</div></div>
+            <div className="stat-card"><div className="stat-label">Gross Margin</div><div className="stat-value" style={{ color: marginTone(data.margin?.marginPct ?? 0) }}>{(data.margin?.marginPct ?? 0).toFixed(1)}%</div></div>
+          </>
+        )}
         {data.type === "AR_AGING" && (
           <>
             <div className="stat-card"><div className="stat-label">Outstanding Invoices</div><div className="stat-value">{data.arAging?.rows.length ?? 0}</div></div>
@@ -867,6 +949,7 @@ export function ReportsClient({ data }: { data: ReportData }) {
         </div>
         <div className="card-body" style={{ padding: "0 0 8px" }}>
           {data.type === "SALES"        && <SalesTable rows={data.sales?.monthly ?? []} />}
+          {data.type === "MARGIN"       && <MarginView data={data.margin} />}
           {data.type === "AR_AGING"     && <ArAgingTable rows={data.arAging?.rows ?? []} buckets={data.arAging?.buckets ?? {}} />}
           {data.type === "INVENTORY"    && <InventoryTable rows={data.inventory?.rows ?? []} />}
           {data.type === "PO_SUMMARY"   && <PoSummaryTable rows={data.poSummary?.rows ?? []} />}

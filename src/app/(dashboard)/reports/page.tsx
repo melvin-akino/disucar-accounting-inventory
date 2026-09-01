@@ -9,7 +9,7 @@ import { ReportsClient } from "./ReportsClient";
 
 export const dynamic = "force-dynamic";
 
-export type ReportType = "SALES" | "AR_AGING" | "INVENTORY" | "PO_SUMMARY" | "PL" | "LOT_EXPIRY" | "LOT_TRACE" | "INVENTORY_LOT" | "UNBALANCED_COLLECTIONS" | "AGENT_AUDIT";
+export type ReportType = "SALES" | "MARGIN" | "AR_AGING" | "INVENTORY" | "PO_SUMMARY" | "PL" | "LOT_EXPIRY" | "LOT_TRACE" | "INVENTORY_LOT" | "UNBALANCED_COLLECTIONS" | "AGENT_AUDIT";
 
 // ── Data shapes ───────────────────────────────────────────────────────────────
 
@@ -26,6 +26,16 @@ export interface SalesByCustomer {
   name: string;
   orders: number;
   revenue: number;
+}
+
+export interface MarginRow {
+  key: string;
+  label: string;
+  qty: number;
+  revenue: number;
+  cogs: number;
+  grossProfit: number;
+  marginPct: number;
 }
 
 export interface SalesByBrand {
@@ -128,6 +138,17 @@ export interface ReportData {
   from: string;
   to: string;
   sales?: { monthly: SalesRow[]; byCustomer: SalesByCustomer[]; byBrand: SalesByBrand[]; totalRevenue: number; totalOrders: number };
+  margin?: {
+    byMonth: MarginRow[];
+    byProduct: MarginRow[];
+    byCustomer: MarginRow[];
+    totalRevenue: number;
+    totalCogs: number;
+    totalGrossProfit: number;
+    marginPct: number;
+    ordersCounted: number;
+    uncostedLines: number;
+  };
   arAging?: { rows: ArAgingRow[]; totalBalance: number; buckets: Record<string, number> };
   inventory?: { rows: InventoryRow[]; belowReorderCount: number; totalSkus: number };
   poSummary?: { rows: PoSummaryRow[]; byStatus: Record<string, number>; totalValue: number };
@@ -294,6 +315,104 @@ export default async function ReportsPage({ searchParams }: Props) {
     const totalRevenue = monthly.reduce((s, r) => s + r.revenue, 0);
 
     data.sales = { monthly, byCustomer, byBrand, totalRevenue, totalOrders: orders.length };
+  }
+
+  // ── Margin ─────────────────────────────────────────────────────────────────
+  // Gross profit from the cost the goods actually bore, not an assumed markup.
+  //
+  // Revenue comes from the order line, cost from its OrderLineLot allocations — the
+  // per-layer costs frozen at delivery. A line that drew from a 200.00 layer and a
+  // 205.00 layer contributes both, so the margin reflects what was really sold rather
+  // than the SKU's current price.
+  //
+  // Scoped to DELIVERED orders on purpose: allocations are only written when stock is
+  // consumed, so including earlier states would show revenue with no cost against it
+  // and report a margin near 100%.
+  if (type === "MARGIN") {
+    const lines = await prisma.orderLine.findMany({
+      where: {
+        order: {
+          state: "DELIVERED",
+          createdAt: { gte: from, lte: to },
+          ...(customerId && { customerId }),
+        },
+      },
+      select: {
+        qty: true,
+        lineTotal: true,
+        order: { select: { id: true, createdAt: true, customer: { select: { name: true } } } },
+        sku: { select: { sku: true, name: true } },
+        lots: { select: { costTotal: true } },
+      },
+    });
+
+    const bump = (
+      map: Map<string, MarginRow>,
+      key: string,
+      label: string,
+      qty: number,
+      revenue: number,
+      cogs: number
+    ) => {
+      if (!map.has(key)) {
+        map.set(key, { key, label, qty: 0, revenue: 0, cogs: 0, grossProfit: 0, marginPct: 0 });
+      }
+      const r = map.get(key)!;
+      r.qty += qty;
+      r.revenue += revenue;
+      r.cogs += cogs;
+    };
+
+    const byMonth = new Map<string, MarginRow>();
+    const byProduct = new Map<string, MarginRow>();
+    const byCustomer = new Map<string, MarginRow>();
+    const orders = new Set<string>();
+    let uncostedLines = 0;
+
+    for (const l of lines) {
+      const revenue = num(l.lineTotal);
+      const cogs = l.lots.reduce((s, x) => s + num(x.costTotal), 0);
+      const qty = num(l.qty);
+      // A delivered line with no allocation predates FIFO costing. Counting it would
+      // silently inflate margin, so it is excluded and reported separately.
+      if (l.lots.length === 0) { uncostedLines++; continue; }
+      orders.add(l.order.id);
+
+      bump(byMonth, monthLabel(l.order.createdAt), monthLabel(l.order.createdAt), qty, revenue, cogs);
+      bump(byProduct, l.sku.sku, `${l.sku.name} (${l.sku.sku})`, qty, revenue, cogs);
+      bump(byCustomer, l.order.customer.name, l.order.customer.name, qty, revenue, cogs);
+    }
+
+    const finish = (map: Map<string, MarginRow>) =>
+      Array.from(map.values()).map((r) => {
+        const grossProfit = Math.round((r.revenue - r.cogs) * 100) / 100;
+        return {
+          ...r,
+          revenue: Math.round(r.revenue * 100) / 100,
+          cogs: Math.round(r.cogs * 100) / 100,
+          grossProfit,
+          // Margin on zero revenue is undefined, not zero — free goods would otherwise
+          // report as a 0% line rather than being visibly out of scope.
+          marginPct: r.revenue > 0 ? Math.round((grossProfit / r.revenue) * 1000) / 10 : 0,
+        };
+      });
+
+    const monthRows = finish(byMonth);
+    const totalRevenue = monthRows.reduce((s, r) => s + r.revenue, 0);
+    const totalCogs = monthRows.reduce((s, r) => s + r.cogs, 0);
+    const totalGrossProfit = Math.round((totalRevenue - totalCogs) * 100) / 100;
+
+    data.margin = {
+      byMonth: monthRows,
+      byProduct: finish(byProduct).sort((a, b) => b.grossProfit - a.grossProfit),
+      byCustomer: finish(byCustomer).sort((a, b) => b.grossProfit - a.grossProfit).slice(0, 10),
+      totalRevenue: Math.round(totalRevenue * 100) / 100,
+      totalCogs: Math.round(totalCogs * 100) / 100,
+      totalGrossProfit,
+      marginPct: totalRevenue > 0 ? Math.round((totalGrossProfit / totalRevenue) * 1000) / 10 : 0,
+      ordersCounted: orders.size,
+      uncostedLines,
+    };
   }
 
   // ── AR Aging ───────────────────────────────────────────────────────────────

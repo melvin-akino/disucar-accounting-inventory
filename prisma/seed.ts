@@ -170,9 +170,22 @@ async function main() {
   // from the pile it references. Giving it a Stock row would double-count the material.
   const stocked = [...packaged, ...bulk];
 
+  // Warehouse id -> inventory GL account, mirroring INVENTORY_ACCOUNT_BY_WAREHOUSE_CODE
+  // in src/lib/coa.ts. The seed cannot import from src, so the codes are mapped here.
+  const INVENTORY_ACCOUNT_BY_WAREHOUSE: Record<string, string> = {
+    [mnl.id]: "1200",
+    [ceb.id]: "1210",
+    [dvo.id]: "1220",
+  };
+
+  // The Rosales depot is the aggregates yard, so it carries the piles but not the
+  // packaged lines. Stocking only MNL and CEB left it with no inventory at all, while
+  // orders were still being delivered from it.
+  const locationsFor = (isBulk: boolean) => (isBulk ? [mnl, ceb, dvo] : [mnl, ceb]);
+
   for (const item of stocked) {
     const isBulk = item.itemKind === "BULK";
-    for (const wh of [mnl, ceb]) {
+    for (const wh of locationsFor(isBulk)) {
       await prisma.stock.upsert({
         where: { skuId_warehouseId: { skuId: item.id, warehouseId: wh.id } },
         update: {},
@@ -215,7 +228,7 @@ async function main() {
     const received = isBulk ? [TRUCKLOAD_M3, TRUCKLOAD_M3] : [1200, 1200];
     const remaining = isBulk ? [18, 36] : [800, 1200];
 
-    for (const wh of [mnl, ceb]) {
+    for (const wh of locationsFor(isBulk)) {
       for (let i = 0; i < layers.length; i++) {
         const lotNumber = `${item.sku}-L${i + 1}`;
         const exists = await prisma.lot.findFirst({
@@ -420,6 +433,83 @@ async function main() {
         await prisma.stock.updateMany({
           where: { skuId: targetId, warehouseId: whId },
           data: { reserved: { increment: qty } },
+        });
+      }
+    }
+
+    // A delivered order has consumed its stock, so the seed has to consume it too:
+    // draw the cost layers down FIFO and record what each line bore. Without this the
+    // demo carried orders marked DELIVERED that had never touched inventory, and the
+    // margin report — which reads exactly these allocations — had nothing to show.
+    if (state === "DELIVERED") {
+      const orderLines = await prisma.orderLine.findMany({ where: { orderId: id } });
+
+      for (const line of orderLines) {
+        const item = catMap[lines.find(l => catMap[l.sku].id === line.skuId)!.sku];
+        const targetId = item.bulkSourceId ?? item.id;
+        const drawQty = item.bulkSourceId
+          ? Number(line.qty) * Number(item.bulkVolumeM3 ?? 0)
+          : Number(line.qty);
+
+        const openLots = await prisma.lot.findMany({
+          where: { skuId: targetId, warehouseId: whId, remainingQty: { gt: 0 } },
+          orderBy: [{ receivedAt: "asc" }, { id: "asc" }],
+        });
+
+        let remaining = drawQty;
+        for (const lot of openLots) {
+          if (remaining <= 0) break;
+          const take = Math.min(Number(lot.remainingQty), remaining);
+          const unitCost = Number(lot.unitCost);
+
+          await prisma.lot.update({
+            where: { id: lot.id },
+            data: { remainingQty: { decrement: take } },
+          });
+          await prisma.orderLineLot.create({
+            data: {
+              orderLineId: line.id,
+              lotId: lot.id,
+              qtyTaken: take,
+              unitCost,
+              costTotal: Math.round(take * unitCost * 100) / 100,
+            },
+          });
+          remaining -= take;
+        }
+
+        await prisma.stock.updateMany({
+          where: { skuId: targetId, warehouseId: whId },
+          data: { onHand: { decrement: drawQty - remaining } },
+        });
+      }
+
+      // Recognise the cost, exactly as consumeStock does on a real delivery. Without
+      // this the margin report (which reads the allocations) and the ledger (which
+      // reads account 5000) would disagree about the same delivered orders.
+      const allocated = await prisma.orderLineLot.findMany({
+        where: { orderLine: { orderId: id } },
+        select: { costTotal: true },
+      });
+      const cogs = Math.round(allocated.reduce((s, a) => s + Number(a.costTotal), 0) * 100) / 100;
+      const invAccount = INVENTORY_ACCOUNT_BY_WAREHOUSE[whId];
+
+      if (cogs > 0 && invAccount) {
+        await prisma.journalEntry.create({
+          data: {
+            id: `JE-${id.slice(-4)}-CG`,
+            date: daysAgo(1),
+            source: "INV" as JeSource,
+            ref: id,
+            memo: `COGS — order ${id}`,
+            postedById: financeUser.id,
+            lines: {
+              create: [
+                { code: "5000",      dr: cogs, cr: 0    },
+                { code: invAccount,  dr: 0,    cr: cogs },
+              ],
+            },
+          },
         });
       }
     }

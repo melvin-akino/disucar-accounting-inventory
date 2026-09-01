@@ -41,6 +41,7 @@ export default async function PrintReportPage({ searchParams }: Props) {
 
   const TITLES: Record<ReportType, string> = {
     SALES: "Sales Summary Report",
+    MARGIN: "Gross Margin Report",
     AR_AGING: "AR Aging Report",
     INVENTORY: "Inventory Snapshot",
     PO_SUMMARY: "Purchase Order Summary",
