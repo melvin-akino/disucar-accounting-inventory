@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { deliverOrder } from "@/lib/fulfilment";
 import { hasActiveReliefGrant } from "@/lib/reliever";
 
 // WAREHOUSE/ADMIN, or an active WAREHOUSE reliever (item 11).
@@ -58,25 +59,18 @@ export async function confirmDeliveryFromShipments(orderId: string, podSignedBy:
   // Finance/Driver could too. A WAREHOUSE reliever also qualifies (item 11).
   if (!(await isWarehouseAllowed(session))) throw new Error("Forbidden");
 
-  const order = await prisma.order.findUniqueOrThrow({ where: { id: orderId } });
-  if (order.state !== "SHIPPED") throw new Error("Order is not in SHIPPED state");
-
-  await prisma.$transaction(async (tx) => {
-    await tx.order.update({ where: { id: orderId }, data: { state: "DELIVERED" } });
-    await tx.orderEvent.create({
-      data: {
-        orderId,
-        state: "DELIVERED",
-        actorId: session.user.id,
-        note: podSignedBy ? `Delivered — signed by ${podSignedBy}` : "Delivered",
-      },
-    });
-    if (podSignedBy) {
-      await tx.shipment.updateMany({ where: { orderId }, data: { podSignedBy } });
-    }
-  });
+  // Routed through deliverOrder for the same reason as the warehouse board: this screen
+  // used to set the state alone, so an order delivered from here consumed no stock and
+  // recognised no cost.
+  await deliverOrder(
+    orderId,
+    { id: session.user.id, name: session.user.name ?? session.user.email ?? session.user.id },
+    podSignedBy
+  );
 
   revalidatePath("/shipments");
   revalidatePath("/orders");
   revalidatePath(`/orders/${orderId}`);
+  revalidatePath("/inventory");
+  revalidatePath("/dashboard");
 }

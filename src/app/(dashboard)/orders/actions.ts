@@ -11,75 +11,18 @@ import { orderTotal, num } from "@/lib/utils";
 import { getCustomerCredit } from "@/lib/credit";
 import { sendOrderEmail } from "@/lib/email";
 import { nextCode, jeId, parseDays } from "@/lib/ids";
-import {
-  selectLotsFifo,
-  totalAllocationCost,
-  validateLotPlan,
-  isFifoPlan,
-  costPlan,
-  type CostedLotAllocation,
-} from "@/lib/order-logic";
+import { selectLotsFifo, validateLotPlan, isFifoPlan } from "@/lib/order-logic";
+// Delivery lives in lib/fulfilment: three screens can mark an order delivered, and the
+// two that were not the order page used to skip stock consumption and COGS entirely.
+import { resolveDraws, consumeStockForDelivery } from "@/lib/fulfilment";
 import { writeAudit } from "@/lib/audit";
 import { settlementView, validatePayment, blockingReason, type SettlementState } from "@/lib/order-flow";
 import { ensureOpenShift } from "../dashboard/shift-actions";
-import { resolveStockDraw } from "@/lib/bulk";
-import { inventoryAccountFor, COGS_ACCOUNT } from "@/lib/coa";
 import { resolveUnitPrice, checkWholesaleMinimums, formatViolations, canApprove } from "@/lib/wholesale";
 
 export { getCustomerCredit };
 
 // ── Stock helpers ─────────────────────────────────────────────────────────────
-
-/**
- * Translate order lines into the stock they actually move.
- *
- * A packaged or bulk line moves its own SKU. A truck-size line moves the stockpile it
- * draws from: 3 mini-trucks of 2.5 m3 become 7.5 m3 against the sand, and nothing is
- * ever reserved or picked against the vessel SKU itself.
- *
- * Draws are merged per material, so two different truck sizes cut from the same pile
- * cannot each be reserved against the full quantity on hand.
- */
-async function resolveDraws(
-  lines: { skuId: string; qty: unknown; name: string }[]
-): Promise<{ skuId: string; qty: number; name: string }[]> {
-  const items = await prisma.catalogItem.findMany({
-    where: { id: { in: lines.map((l) => l.skuId) } },
-    select: {
-      id: true, name: true, itemKind: true, bulkSourceId: true,
-      bulkVolumeM3: true, lengthM: true, widthM: true, heightM: true,
-    },
-  });
-  const itemMap = new Map(items.map((i) => [i.id, i]));
-
-  const merged = new Map<string, { skuId: string; qty: number; name: string }>();
-  for (const line of lines) {
-    const item = itemMap.get(line.skuId);
-    if (!item) throw new Error(`Unknown item on order line: ${line.name}`);
-
-    const draw = resolveStockDraw(
-      {
-        id: item.id,
-        name: item.name,
-        itemKind: item.itemKind,
-        bulkSourceId: item.bulkSourceId,
-        bulkVolumeM3: item.bulkVolumeM3 === null ? null : num(item.bulkVolumeM3),
-        lengthM: item.lengthM === null ? null : num(item.lengthM),
-        widthM: item.widthM === null ? null : num(item.widthM),
-        heightM: item.heightM === null ? null : num(item.heightM),
-      },
-      num(line.qty as number)
-    );
-
-    const existing = merged.get(draw.skuId);
-    if (existing) {
-      existing.qty = Math.round((existing.qty + draw.qty) * 1000) / 1000;
-    } else {
-      merged.set(draw.skuId, { skuId: draw.skuId, qty: draw.qty, name: line.name });
-    }
-  }
-  return Array.from(merged.values());
-}
 
 async function reserveStock(orderId: string, warehouseId: string) {
   const lines = await prisma.orderLine.findMany({ where: { orderId } });
@@ -121,138 +64,6 @@ async function releaseReservation(orderId: string, warehouseId: string) {
       })
     )
   );
-}
-
-/**
- * Consume stock for a delivered order: decrement the stock row, draw down cost layers
- * FIFO, and post the resulting COGS.
- *
- * Runs as one transaction. Previously the stock decrement, the lot draw-down and (now)
- * the ledger posting were separate writes, so a mid-way failure could leave stock
- * decremented with lots untouched — and would now leave inventory credited with no
- * matching COGS debit.
- */
-async function consumeStock(
-  orderId: string,
-  warehouseId: string,
-  actorName: string,
-  actorId: string
-) {
-  const [lines, warehouse] = await Promise.all([
-    prisma.orderLine.findMany({ where: { orderId }, include: { plannedLots: true } }),
-    prisma.warehouse.findUniqueOrThrow({ where: { id: warehouseId }, select: { code: true } }),
-  ]);
-  const invAccount = inventoryAccountFor(warehouse.code);
-
-  // Allocate before opening the transaction so an insufficient-stock error surfaces
-  // without having written anything.
-  const plan: {
-    line: (typeof lines)[number];
-    draw: { skuId: string; qty: number };
-    allocations: CostedLotAllocation[];
-  }[] = [];
-
-  for (const line of lines) {
-    // A truck-size line consumes cubic metres of its stockpile, not units of itself.
-    const [draw] = await resolveDraws([line]);
-
-    const lots = await prisma.lot.findMany({
-      where: { skuId: draw.skuId, warehouseId, remainingQty: { gt: 0 }, status: "ACTIVE" },
-    });
-    const costed = lots.map((l) => ({
-      id: l.id,
-      remainingQty: num(l.remainingQty),
-      unitCost: num(l.unitCost),
-      receivedAt: l.receivedAt,
-    }));
-
-    // Honour the selection made at order entry when it is still satisfiable. Stock
-    // moves between order entry and delivery — another order may have drained a layer,
-    // or a lot may have been quarantined — so an unsatisfiable plan degrades to FIFO
-    // rather than blocking the delivery.
-    const planned = line.plannedLots.map((p) => ({ lotId: p.lotId, qty: num(p.qtyPlanned) }));
-    const plannedUsable =
-      planned.length > 0 && validateLotPlan(planned, costed, draw.qty).ok;
-
-    const allocations = plannedUsable
-      ? costPlan(planned, costed)
-      : selectLotsFifo(costed, draw.qty);
-
-    plan.push({ line, draw, allocations });
-  }
-
-  const cogsAmount = totalAllocationCost(plan.flatMap((p) => p.allocations));
-  const journalId = cogsAmount > 0
-    ? await nextCode("JE", (since) => prisma.journalEntry.count({ where: { createdAt: { gte: since } } }))
-    : null;
-
-  await prisma.$transaction(async (tx) => {
-    for (const { line, draw, allocations } of plan) {
-      await tx.stock.updateMany({
-        where: { skuId: draw.skuId, warehouseId },
-        data: {
-          onHand: { decrement: draw.qty },
-          reserved: { decrement: draw.qty },
-        },
-      });
-
-      const lineCost = totalAllocationCost(allocations);
-      await tx.stockMove.create({
-        data: {
-          skuId: draw.skuId,
-          warehouseId,
-          type: "PICK",
-          qty: -draw.qty,
-          costPerUnit: draw.qty > 0 ? lineCost / draw.qty : 0,
-          ref: orderId,
-          // Names the vessel sold as well as the material moved, so the stock ledger
-          // still explains itself when the SKU on the move is not the SKU on the order.
-          note: draw.skuId === line.skuId
-            ? `Picked for order ${orderId}`
-            : `Picked for order ${orderId} — ${line.name}`,
-          by: actorName,
-        },
-      });
-
-      for (const a of allocations) {
-        await tx.lot.update({
-          where: { id: a.lotId },
-          data: { remainingQty: { decrement: a.take } },
-        });
-        // Traceability plus the frozen cost this order actually bore. A line spanning
-        // two deliveries produces one row per layer, each at its own cost.
-        await tx.orderLineLot.create({
-          data: {
-            orderLineId: line.id,
-            lotId: a.lotId,
-            qtyTaken: a.take,
-            unitCost: a.unitCost,
-            costTotal: a.costTotal,
-          },
-        });
-      }
-    }
-
-    // COGS recognition. Account 5000 existed in the chart of accounts but nothing had
-    // ever debited it, so reporting showed gross sales rather than margin.
-    if (journalId && cogsAmount > 0) {
-      await tx.journalEntry.create({
-        data: {
-          id: journalId,
-          source: "INV",
-          ref: orderId,
-          memo: `COGS — order ${orderId}`,
-          postedById: actorId,
-          lines: {
-            create: [
-              { code: COGS_ACCOUNT, dr: cogsAmount, cr: 0 },
-              { code: invAccount,   dr: 0,          cr: cogsAmount },
-            ],
-          },
-        },
-      });
-    }
-  });
 }
 
 // ── Lot availability for order entry ──────────────────────────────────────────
@@ -662,7 +473,7 @@ export async function advanceOrderState(
 
   // Consume stock when delivered (decrement onHand + release reservation)
   if (transition.next === "DELIVERED") {
-    await consumeStock(
+    await consumeStockForDelivery(
       orderId,
       order.warehouseId,
       session.user.name ?? session.user.email ?? session.user.id,
@@ -733,7 +544,7 @@ export async function returnShipmentToWarehouse(orderId: string, note: string) {
   const order = await prisma.order.findUniqueOrThrow({ where: { id: orderId } });
   if (order.state !== "SHIPPED") throw new Error("Order is not in SHIPPED state");
 
-  // consumeStock only runs on the DELIVERED transition, so a SHIPPED order's stock is
+  // Stock consumption only runs on the DELIVERED transition, so a SHIPPED order's stock is
   // still sitting in `reserved`, never decremented from `onHand` — releasing the
   // reservation alone is correct, no additional onHand adjustment needed.
   await releaseReservation(orderId, order.warehouseId);

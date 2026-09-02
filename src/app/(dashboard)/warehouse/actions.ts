@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { deliverOrder } from "@/lib/fulfilment";
 import { hasActiveReliefGrant } from "@/lib/reliever";
 
 // Warehouse actions accept WAREHOUSE/ADMIN, plus anyone currently holding an active
@@ -76,6 +77,8 @@ export async function markShipped(
   revalidatePath("/shipments");
   revalidatePath("/orders");
   revalidatePath(`/orders/${orderId}`);
+  revalidatePath("/inventory");
+  revalidatePath("/dashboard");
 }
 
 export async function confirmDelivery(orderId: string, podSignedBy: string) {
@@ -84,23 +87,14 @@ export async function confirmDelivery(orderId: string, podSignedBy: string) {
   // Delivered status is confirmed by warehouse staff only (item 10) — or a WAREHOUSE reliever.
   await requireWarehouseAccess(session);
 
-  const order = await prisma.order.findUniqueOrThrow({ where: { id: orderId } });
-  if (order.state !== "SHIPPED") throw new Error("Order must be SHIPPED first");
-
-  await prisma.$transaction(async (tx) => {
-    await tx.order.update({ where: { id: orderId }, data: { state: "DELIVERED" } });
-    await tx.orderEvent.create({
-      data: {
-        orderId,
-        state: "DELIVERED",
-        actorId: session.user.id,
-        note: podSignedBy ? `Delivered — signed by ${podSignedBy}` : "Delivered",
-      },
-    });
-    if (podSignedBy) {
-      await tx.shipment.updateMany({ where: { orderId }, data: { podSignedBy } });
-    }
-  });
+  // Routed through deliverOrder so the board consumes stock, draws down cost layers and
+  // posts COGS. It previously only set the state, so an order delivered from here never
+  // decremented inventory, held its reservation forever and recognised no cost at all.
+  await deliverOrder(
+    orderId,
+    { id: session.user.id, name: session.user.name ?? session.user.email ?? session.user.id },
+    podSignedBy
+  );
 
   revalidatePath("/warehouse");
   revalidatePath("/shipments");
