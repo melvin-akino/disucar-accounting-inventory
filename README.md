@@ -203,6 +203,41 @@ Open [http://localhost:3000](http://localhost:3000)
 
 ---
 
+### AWS — one command from nothing
+
+`deploy-aws.sh` provisions the whole stack (VPC lookup, security groups, key pair,
+RDS PostgreSQL 16, EC2 running the app in Docker) from your own machine.
+
+You only need to do one thing by hand: create an IAM user with programmatic access,
+attach **AmazonEC2FullAccess** and **AmazonRDSFullAccess**, then:
+
+```bash
+aws configure          # paste the keys here — never into a file in this repo
+./deploy-aws.sh        # prints a cost estimate and waits for confirmation
+```
+
+| Command | Does |
+|---|---|
+| `./deploy-aws.sh` | Provision everything, print the URL |
+| `./deploy-aws.sh --status` | Show what exists |
+| `./deploy-aws.sh --destroy` | Tear it all down |
+
+Notes worth knowing before you run it:
+
+- **It costs money** — roughly $32–40/month (EC2 t3.small + RDS db.t4g.micro + IPv4).
+  The script states this and refuses to proceed without an explicit `deploy`.
+- **The database is not public.** Postgres accepts connections only from the app's
+  security group; SSH is restricted to the IP of the machine you run the script from.
+- **Generated secrets** (DB password, `NEXTAUTH_SECRET`) are written to
+  `~/.disucar-erp-deploy.txt` with mode 600 and never printed or committed.
+- **Everything is tagged `Project=disucar-erp`**, which is how `--destroy` finds it —
+  nothing else in your account is touched.
+- **The database starts empty.** Load the demo dataset only if you want it:
+  `SEED_DEMO_DATA=true docker compose up -d migrate` on the box.
+- **Add HTTPS before real use.** The instance serves plain HTTP, so a login sends the
+  password in clear text. Point a domain at the IP and run `setup-aws.sh` on the box
+  for Nginx and Let's Encrypt.
+
 ### Docker (Production)
 
 ```bash

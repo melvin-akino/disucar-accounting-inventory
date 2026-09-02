@@ -14,7 +14,7 @@
 #  Environment overrides (set before running to skip prompts):
 #    RDS_HOST        existing RDS endpoint (skip RDS creation)
 #    RDS_PORT        default 5432
-#    RDS_DB          default disucar-sales
+#    RDS_DB          default disucar
 #    RDS_USER        default postgres
 #    RDS_PASSWORD    master password (required if not creating RDS)
 #    AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY  (or use EC2 IAM role)
@@ -41,7 +41,7 @@
 set -euo pipefail
 
 # ── Config ────────────────────────────────────────────────────────────────────
-REPO_URL="https://github.com/melvin-akino/inventory-sales-processing-accounting.git"
+REPO_URL="https://github.com/melvin-akino/disucar-accounting-inventory.git"
 APP_DIR="/opt/disucar-sales"
 APP_PORT=3000
 CREDS_FILE="/root/disucar-sales-credentials.txt"
@@ -181,7 +181,7 @@ fi
 if [[ "$RDS_MODE" == "local" ]]; then
   RDS_HOST="db"
   RDS_PORT="5432"
-  RDS_DB="${RDS_DB:-disucar-sales}"
+  RDS_DB="${RDS_DB:-disucar}"
   RDS_USER="${RDS_USER:-postgres}"
   RDS_PASSWORD="${RDS_PASSWORD:-$(gen_pass)}"
   ok "Using local Postgres container on this instance (db-service: ${RDS_HOST})"
@@ -199,7 +199,7 @@ elif [[ "$RDS_MODE" == "create" ]]; then
   ask RDS_INSTANCE_ID "RDS instance identifier"                      "disucar-sales-db"
   ask RDS_CLASS       "RDS instance class"                           "db.t3.micro"
   ask RDS_STORAGE_GB  "RDS allocated storage (GB)"                   "20"
-  ask RDS_DB          "Database name"                                "${RDS_DB:-disucar-sales}"
+  ask RDS_DB          "Database name"                                "${RDS_DB:-disucar}"
   ask RDS_USER        "RDS master username"                          "${RDS_USER:-postgres}"
   RDS_PASSWORD="${RDS_PASSWORD:-$(gen_pass)}"
   warn "Generated RDS master password: ${RDS_PASSWORD}"
@@ -208,7 +208,7 @@ elif [[ "$RDS_MODE" == "create" ]]; then
 else
   ask RDS_HOST     "RDS endpoint (hostname only, no port)" "${RDS_HOST:-}"
   ask RDS_PORT     "RDS port"                              "${RDS_PORT:-5432}"
-  ask RDS_DB       "Database name"                        "${RDS_DB:-disucar-sales}"
+  ask RDS_DB       "Database name"                        "${RDS_DB:-disucar}"
   ask RDS_USER     "Master username"                      "${RDS_USER:-postgres}"
   ask_secret RDS_PASSWORD "Master password"
 fi
@@ -758,7 +758,7 @@ banner "Registering Systemd Service"
 cat > /etc/systemd/system/disucar-sales.service << UNITEOF
 [Unit]
 Description=Disucar Sales ERP (Docker Compose — RDS)
-Documentation=https://github.com/melvin-akino/inventory-sales-processing-accounting
+Documentation=https://github.com/melvin-akino/disucar-accounting-inventory
 After=docker.service network-online.target
 Requires=docker.service
 Wants=network-online.target
