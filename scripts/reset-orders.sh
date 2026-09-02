@@ -1,16 +1,16 @@
 #!/bin/bash
 set -euo pipefail
-cd /opt/disucar-sales
+cd /opt/disucar
 
 STAMP=$(date +%Y%m%d-%H%M%S)
-BACKUP="/home/ubuntu/disucar-sales-backup-preorders-${STAMP}.sql"
+BACKUP="/home/ubuntu/disucar-backup-preorders-${STAMP}.sql"
 echo "=== Backup -> ${BACKUP} ==="
-sudo docker exec disucar-sales-db pg_dump -U postgres disucar-sales > "$BACKUP"
+sudo docker exec disucar-db pg_dump -U postgres disucar > "$BACKUP"
 ls -lh "$BACKUP"
 
 echo
 echo "=== Deleting old orders/invoices/collections/AR journal entries ==="
-sudo docker exec -i disucar-sales-db psql -U postgres -d disucar-sales -v ON_ERROR_STOP=1 <<'SQL'
+sudo docker exec -i disucar-db psql -U postgres -d disucar -v ON_ERROR_STOP=1 <<'SQL'
 BEGIN;
 
 -- Collections reference invoices we're about to delete.

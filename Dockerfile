@@ -3,7 +3,10 @@ FROM node:20-alpine AS deps
 WORKDIR /app
 RUN apk add --no-cache libc6-compat openssl
 COPY package.json package-lock.json* ./
-RUN npm install --legacy-peer-deps
+# npm ci, not npm install: it installs exactly what package-lock.json pins, so an
+# image build cannot silently pick up a different version than was tested.
+# --legacy-peer-deps is gone with the unused vitest-mock-extended that needed it.
+RUN npm ci
 
 # ── Stage 2: build ────────────────────────────────────────────────────────────
 FROM node:20-alpine AS builder

@@ -23,7 +23,21 @@ interface Props {
 
 type Stage = "upload" | "preview" | "result";
 
-type PreviewRow = Record<string, string> & { __rowNum: number; __errors: string[] };
+/**
+ * A parsed CSV row plus what validation made of it.
+ *
+ * The cells are nested rather than spread alongside the metadata. As an intersection
+ * of `Record<string, string>` with numeric and array fields the type was
+ * contradictory — TypeScript resolved `rowNum` to `string & number`, i.e. `never`, so
+ * no object could satisfy it and the file never compiled. Nesting also retires the
+ * `__` prefixes, which existed only to avoid colliding with a CSV header called
+ * "rowNum"; that collision is impossible now the cells have their own namespace.
+ */
+interface PreviewRow {
+  cells: Record<string, string>;
+  rowNum: number;
+  errors: string[];
+}
 
 interface ImportResult {
   created?: number;
@@ -54,7 +68,8 @@ export function ImportModal({ title, templateHref, dataHref, importUrl, columns,
           errors.push(`${col.label} is required`);
         }
       }
-      return { ...row, __rowNum: i + 2, __errors: errors };
+      // rowNum is the spreadsheet line the user sees: 1 is the header.
+      return { cells: row, rowNum: i + 2, errors };
     });
   }
 
@@ -70,7 +85,7 @@ export function ImportModal({ title, templateHref, dataHref, importUrl, columns,
       }
       const preview = validateRows(raw);
       setPreviewRows(preview);
-      setValidRows(preview.filter(r => r.__errors.length === 0).map(({ __rowNum: _r, __errors: _e, ...rest }) => rest));
+      setValidRows(preview.filter(r => r.errors.length === 0).map(r => r.cells));
       setStage("preview");
     };
     reader.readAsText(file);
@@ -130,7 +145,7 @@ export function ImportModal({ title, templateHref, dataHref, importUrl, columns,
     URL.revokeObjectURL(url);
   }
 
-  const errorCount = previewRows.filter(r => r.__errors.length > 0).length;
+  const errorCount = previewRows.filter(r => r.errors.length > 0).length;
   const validCount = previewRows.length - errorCount;
 
   return (
@@ -277,17 +292,17 @@ export function ImportModal({ title, templateHref, dataHref, importUrl, columns,
                   </thead>
                   <tbody>
                     {previewRows.map((row) => (
-                      <tr key={row.__rowNum} style={{ background: row.__errors.length ? "#FFF7F7" : "white", borderBottom: "1px solid #F3F4F6" }}>
-                        <td style={tdStyle}>{row.__rowNum}</td>
+                      <tr key={row.rowNum} style={{ background: row.errors.length ? "#FFF7F7" : "white", borderBottom: "1px solid #F3F4F6" }}>
+                        <td style={tdStyle}>{row.rowNum}</td>
                         {columns.slice(0, 5).map(c => (
                           <td key={c.key} style={{ ...tdStyle, maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                            {row[c.key] || <span style={{ color: "#D1D5DB" }}>—</span>}
+                            {row.cells[c.key] || <span style={{ color: "#D1D5DB" }}>—</span>}
                           </td>
                         ))}
                         <td style={tdStyle}>
-                          {row.__errors.length === 0
+                          {row.errors.length === 0
                             ? <span style={{ color: "#166534", fontWeight: 600 }}>✅ OK</span>
-                            : <span style={{ color: "#991B1B", fontSize: 11 }} title={row.__errors.join("; ")}>❌ {row.__errors[0]}</span>
+                            : <span style={{ color: "#991B1B", fontSize: 11 }} title={row.errors.join("; ")}>❌ {row.errors[0]}</span>
                           }
                         </td>
                       </tr>

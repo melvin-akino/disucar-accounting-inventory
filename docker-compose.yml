@@ -10,7 +10,7 @@ services:
     build:
       context: .
       target: builder
-    container_name: disucar-sales-migrate
+    container_name: disucar-migrate
     # `migrate deploy` applies the committed migrations in prisma/migrations and nothing
     # else. It replaced `db push --accept-data-loss`, which inferred the changes at boot
     # and would silently drop a column or table to make the database match the schema —
@@ -36,7 +36,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: disucar-sales-ops
+    container_name: disucar-app
     restart: unless-stopped
     ports:
       - "127.0.0.1:3000:3000"

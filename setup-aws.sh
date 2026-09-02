@@ -35,16 +35,16 @@
 #   10.  Obtains Let's Encrypt SSL certificate (optional)
 #   11.  Configures firewall
 #   12.  Registers systemd service for auto-start on reboot
-#   13.  Saves all credentials to /root/disucar-sales-credentials.txt
+#   13.  Saves all credentials to /root/disucar-credentials.txt
 # =============================================================================
 
 set -euo pipefail
 
 # ── Config ────────────────────────────────────────────────────────────────────
 REPO_URL="https://github.com/melvin-akino/disucar-accounting-inventory.git"
-APP_DIR="/opt/disucar-sales"
+APP_DIR="/opt/disucar"
 APP_PORT=3000
-CREDS_FILE="/root/disucar-sales-credentials.txt"
+CREDS_FILE="/root/disucar-credentials.txt"
 NON_INTERACTIVE=false
 [[ "${1:-}" == "--non-interactive" ]] && NON_INTERACTIVE=true
 
@@ -196,7 +196,7 @@ elif [[ "$RDS_MODE" == "create" ]]; then
     AWS_SECRET_KEY=""
   fi
   ask AWS_REGION      "AWS Region"                                   "${AWS_DEFAULT_REGION:-ap-southeast-1}"
-  ask RDS_INSTANCE_ID "RDS instance identifier"                      "disucar-sales-db"
+  ask RDS_INSTANCE_ID "RDS instance identifier"                      "disucar-db"
   ask RDS_CLASS       "RDS instance class"                           "db.t3.micro"
   ask RDS_STORAGE_GB  "RDS allocated storage (GB)"                   "20"
   ask RDS_DB          "Database name"                                "${RDS_DB:-disucar}"
@@ -380,7 +380,7 @@ if [[ "$RDS_MODE" == "create" ]]; then
   ok "Found ${#SUBNET_ARRAY[@]} subnets in VPC"
 
   # Create DB subnet group (idempotent)
-  DB_SUBNET_GROUP="disucar-sales-db-subnet-group"
+  DB_SUBNET_GROUP="disucar-db-subnet-group"
   if ! aws rds describe-db-subnet-groups --db-subnet-group-name "$DB_SUBNET_GROUP" &>/dev/null; then
     log "Creating RDS subnet group: $DB_SUBNET_GROUP"
     aws rds create-db-subnet-group \
@@ -394,7 +394,7 @@ if [[ "$RDS_MODE" == "create" ]]; then
   fi
 
   # Create RDS security group (allows inbound 5432 from EC2's SG)
-  RDS_SG_NAME="disucar-sales-rds-sg"
+  RDS_SG_NAME="disucar-rds-sg"
   EXISTING_RDS_SG=$(aws ec2 describe-security-groups \
     --filters "Name=group-name,Values=$RDS_SG_NAME" "Name=vpc-id,Values=$EC2_VPC_ID" \
     --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null || echo "None")
@@ -559,7 +559,7 @@ if [[ "$RDS_MODE" == "local" ]]; then
 
   db:
     image: postgres:16-alpine
-    container_name: disucar-sales-db
+    container_name: disucar-db
     restart: unless-stopped
     environment:
       POSTGRES_USER: "${RDS_USER}"
@@ -638,14 +638,14 @@ banner "Loading Prebuilt Images & Starting Application"
 
 cd "$APP_DIR"
 
-if [[ -f /home/ubuntu/disucar-sales-images.tar ]]; then
-  log "Loading prebuilt images from /home/ubuntu/disucar-sales-images.tar (built locally, not on this instance)…"
-  docker load -i /home/ubuntu/disucar-sales-images.tar
+if [[ -f /home/ubuntu/disucar-images.tar ]]; then
+  log "Loading prebuilt images from /home/ubuntu/disucar-images.tar (built locally, not on this instance)…"
+  docker load -i /home/ubuntu/disucar-images.tar
   ok "Prebuilt images loaded"
   log "Starting containers (no build — using loaded images)…"
   docker compose up -d --no-build
 else
-  warn "No prebuilt image tar found at /home/ubuntu/disucar-sales-images.tar — falling back to building on this instance"
+  warn "No prebuilt image tar found at /home/ubuntu/disucar-images.tar — falling back to building on this instance"
   log "Running docker compose up --build (migrate → app)…"
   log "First run takes 10–20 minutes on a small instance — be patient"
   docker compose up -d --build
@@ -653,7 +653,7 @@ fi
 
 log "Waiting for application health check…"
 WAIT=0; MAX_WAIT=600
-until [[ "$(docker inspect --format='{{.State.Health.Status}}' disucar-sales-ops 2>/dev/null)" == "healthy" ]]; do
+until [[ "$(docker inspect --format='{{.State.Health.Status}}' disucar-app 2>/dev/null)" == "healthy" ]]; do
   sleep 5; WAIT=$((WAIT + 5))
   printf "\r  ${CYAN}⏳${NC} Waiting… %ds" "$WAIT"
   [[ $WAIT -ge $MAX_WAIT ]] && {
@@ -664,15 +664,15 @@ until [[ "$(docker inspect --format='{{.State.Health.Status}}' disucar-sales-ops
   }
 done
 echo ""
-STATUS=$(docker inspect --format='{{.State.Health.Status}}' disucar-sales-ops 2>/dev/null || echo "unknown")
+STATUS=$(docker inspect --format='{{.State.Health.Status}}' disucar-app 2>/dev/null || echo "unknown")
 [[ "$STATUS" == "healthy" ]] && ok "Application container is healthy" \
   || warn "Container status: ${STATUS} — may still be starting up"
 
 # ── 9. Nginx reverse proxy ────────────────────────────────────────────────────
 banner "Configuring Nginx reverse proxy"
 
-NGINX_CONF="/etc/nginx/sites-available/disucar-sales"
-NGINX_ENABLED="/etc/nginx/sites-enabled/disucar-sales"
+NGINX_CONF="/etc/nginx/sites-available/disucar"
+NGINX_ENABLED="/etc/nginx/sites-enabled/disucar"
 
 [[ -f /etc/nginx/sites-enabled/default ]] && rm -f /etc/nginx/sites-enabled/default
 
@@ -755,7 +755,7 @@ fi
 # ── 11. Systemd service ───────────────────────────────────────────────────────
 banner "Registering Systemd Service"
 
-cat > /etc/systemd/system/disucar-sales.service << UNITEOF
+cat > /etc/systemd/system/disucar.service << UNITEOF
 [Unit]
 Description=Disucar Sales ERP (Docker Compose — RDS)
 Documentation=https://github.com/melvin-akino/disucar-accounting-inventory
@@ -781,8 +781,8 @@ WantedBy=multi-user.target
 UNITEOF
 
 systemctl daemon-reload
-systemctl enable disucar-sales.service
-ok "disucar-sales.service enabled (auto-starts on reboot)"
+systemctl enable disucar.service
+ok "disucar.service enabled (auto-starts on reboot)"
 
 # ── 12. Save credentials ──────────────────────────────────────────────────────
 banner "Saving Credentials"
@@ -877,6 +877,6 @@ echo ""
 echo -e "  ${CYAN}Useful commands:${NC}"
 echo -e "    docker compose -C ${APP_DIR} logs -f app         # live logs"
 echo -e "    docker compose -C ${APP_DIR} restart app         # restart app only"
-echo -e "    systemctl restart disucar-sales                       # full restart"
+echo -e "    systemctl restart disucar                       # full restart"
 echo -e "    PGPASSWORD='...' psql -h ${RDS_HOST} -U ${RDS_USER} ${RDS_DB}  # DB shell"
 echo ""

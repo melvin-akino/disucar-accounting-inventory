@@ -1,7 +1,14 @@
 # Disucar Sales ERP — Complete AWS Deployment Guide
 
-> **One-stop setup:** `setup-aws.sh` automates all software installation.  
-> This guide walks you through every AWS service you need — from account creation to going live.
+> **Most people should not follow this guide.** `./deploy-aws.sh` provisions the whole
+> stack — security groups, key pair, RDS, EC2 — from your own machine once `aws configure`
+> has credentials. See the README's "AWS — one command from nothing".
+>
+> This document is the manual fallback: click through every AWS service by hand, then run
+> `setup-aws.sh` on the instance. Use it when you need to understand or vary what the
+> script does. The resource names here (`disucar-sales-key`, `disucar-sales-sg`, …) are
+> ones **you** type into the console, and are independent of the names `deploy-aws.sh`
+> creates for itself (`disucar-erp-*`).
 
 ---
 
