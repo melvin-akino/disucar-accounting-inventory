@@ -10,7 +10,7 @@
 #
 #  Prerequisites — you do these once:
 #    1. Create an IAM user with programmatic access and attach:
-#         AmazonEC2FullAccess, AmazonRDSFullAccess
+#         AmazonEC2FullAccess, AmazonRDSFullAccess   (nothing else is needed)
 #    2. aws configure          (paste the keys THERE, never into a chat or a file
 #                               in this repo — this script only ever reads them
 #                               from the CLI's own credential store)
@@ -290,10 +290,23 @@ setup_ec2() {
   fi
 
   # Amazon Linux 2023, current release, resolved per-region rather than hard-coded.
+  #
+  # SSM holds the canonical pointer, but reading it needs ssm:GetParameters, which
+  # AmazonEC2FullAccess does NOT grant — so fall back to asking EC2 directly for the
+  # newest matching image. That keeps the required IAM policies to EC2 + RDS only.
   local ami
   ami=$(aws_ ssm get-parameters \
     --names /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64 \
-    --query 'Parameters[0].Value' --output text)
+    --query 'Parameters[0].Value' --output text 2>/dev/null || true)
+
+  if [ -z "$ami" ] || [ "$ami" = "None" ]; then
+    ami=$(aws_ ec2 describe-images --owners amazon \
+      --filters "Name=name,Values=al2023-ami-2023.*-kernel-6.1-x86_64" \
+                "Name=state,Values=available" \
+      --query 'sort_by(Images,&CreationDate)[-1].ImageId' --output text)
+  fi
+  [ -n "$ami" ] && [ "$ami" != "None" ] || die "Could not resolve an Amazon Linux 2023 AMI in $REGION."
+  ok "Using AMI $ami"
 
   NEXTAUTH_SECRET=$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 48)
   save_secret NEXTAUTH_SECRET "$NEXTAUTH_SECRET"
