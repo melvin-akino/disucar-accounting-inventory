@@ -22,6 +22,7 @@
 #    ./deploy-aws.sh --status       what exists
 #    ./deploy-aws.sh --ssh          open a shell on the instance
 #    ./deploy-aws.sh --backup       pull a database dump down to this machine
+#    ./deploy-aws.sh --go-live      purge the demo data and issue a real admin
 #    ./deploy-aws.sh --destroy      tear it all down
 #
 #  Everything created is tagged Project=disucar-erp so --destroy can find it
@@ -403,7 +404,9 @@ EOF
 
 start_remote() {
   step "Starting the stack"
-  rssh "cd $REMOTE_DIR && SEED_DEMO_DATA=${SEED_DEMO:-false} docker compose up -d"
+  # Demo data ships by default so there is something to show a client on day one.
+  # Wipe it with ./deploy-aws.sh --go-live, or set SEED_DEMO_DATA=false to start empty.
+  rssh "cd $REMOTE_DIR && SEED_DEMO_DATA=${SEED_DEMO_DATA:-true} docker compose up -d"
   printf '     waiting for the app to answer'
   local n=0
   until curl -fsS --max-time 5 "http://$PUBLIC_IP/login" >/dev/null 2>&1; do
@@ -500,6 +503,43 @@ cmd_backup() {
   ok "Downloaded $(basename "$latest") to $(pwd)"
 }
 
+# Hand the system over: wipe the demo, keep the configuration, issue a real admin.
+cmd_go_live() {
+  setup_ssh_tools; require_instance
+  step "Going live — purging demo data"
+  cat <<EOF
+
+  This deletes every demo order, customer, supplier, catalog item, cost layer and
+  ledger entry, and ${B}removes every demo login${N} — including the accounts whose
+  password is "password123".
+
+  Kept: warehouses (their codes drive the GL accounts), categories, org settings,
+  and one administrator whose password is generated and shown once.
+
+EOF
+  # Not optional: this is irreversible and a demo is exactly when someone realises
+  # afterwards that they wanted something back.
+  say "  Taking a backup first…"
+  rssh "${REMOTE_DIR}/backup.sh"
+  local latest; latest=$(rssh "ls -t ${REMOTE_DIR}/backups/*.sql.gz | head -1")
+  rscp "ec2-user@${PUBLIC_IP}:${latest}" .
+  ok "Backup downloaded: $(basename "$latest")"
+
+  if [ "${ASSUME_YES:-false}" != "true" ]; then
+    printf '\nType %sPURGE%s to erase the demo data: ' "$B" "$N"
+    read -r reply
+    [ "$reply" = "PURGE" ] || die "Cancelled — nothing was deleted."
+  fi
+
+  rssh "cd $REMOTE_DIR && docker compose run --rm \
+        -e RESET_CONFIRM=PURGE \
+        ${ADMIN_EMAIL:+-e ADMIN_EMAIL=$ADMIN_EMAIL} \
+        migrate npx tsx scripts/reset-prod.ts"
+
+  say ""
+  warn "Store the administrator password above — it is not saved anywhere."
+}
+
 cmd_destroy() {
   preflight
   step "Destroying everything tagged Project=$PROJECT"
@@ -539,6 +579,7 @@ case "${1:-deploy}" in
   --status)   cmd_status ;;
   --ssh)      cmd_ssh ;;
   --backup)   cmd_backup ;;
+  --go-live)  cmd_go_live ;;
   --destroy)  cmd_destroy ;;
   --help|-h)  sed -n '2,30p' "$0" ;;
   *)          die "Unknown option: $1  (try --help)" ;;
