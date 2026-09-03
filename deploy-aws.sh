@@ -550,11 +550,13 @@ setup_tls() {
   # Let's Encrypt has a low failure ceiling (5 per account per hostname per hour).
   # Burning those on a record that has not propagated yet locks us out of retrying
   # for an hour, so resolve it ourselves first and fail cheaply.
+  # Resolved ON THE INSTANCE, for two reasons: this script's own host is Windows,
+  # where getent does not exist at all (it exited 127 and killed the run under
+  # `set -e`), and the instance is the vantage point that actually matters --- it
+  # is what certbot's validation server will be pointed at.
   local resolved
-  resolved=$(getent ahostsv4 "$domain" 2>/dev/null | awk 'NR==1{print $1}')
-  if [ -z "$resolved" ]; then
-    resolved=$(nslookup "$domain" 2>/dev/null | awk '/^Address: /{print $2; exit}')
-  fi
+  resolved=$(rssh "getent ahostsv4 '$domain' 2>/dev/null | awk 'NR==1{print \$1}'" 2>/dev/null || true)
+  resolved=$(printf '%s' "$resolved" | tr -d '\r\n ')
   if [ -z "$resolved" ]; then
     die "$domain does not resolve yet. Add the A record, wait for it to propagate, then re-run."
   fi
