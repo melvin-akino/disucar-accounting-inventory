@@ -19,6 +19,7 @@
 #  Then:
 #    ./deploy-aws.sh                provision, build locally, ship, run
 #    ./deploy-aws.sh --push         rebuild and redeploy onto the existing box
+#    ./deploy-aws.sh --resume       finish a run that failed after the upload
 #    ./deploy-aws.sh --status       what exists
 #    ./deploy-aws.sh --ssh          open a shell on the instance
 #    ./deploy-aws.sh --backup       pull a database dump down to this machine
@@ -328,12 +329,12 @@ ship_runtime() {
 
   DB_PASSWORD=$(load_secret DB_PASSWORD)
   if [ -z "$DB_PASSWORD" ]; then
-    DB_PASSWORD=$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32)
+    DB_PASSWORD=$(randstr 32)
     save_secret DB_PASSWORD "$DB_PASSWORD"
   fi
   NEXTAUTH_SECRET=$(load_secret NEXTAUTH_SECRET)
   if [ -z "$NEXTAUTH_SECRET" ]; then
-    NEXTAUTH_SECRET=$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 48)
+    NEXTAUTH_SECRET=$(randstr 48)
     save_secret NEXTAUTH_SECRET "$NEXTAUTH_SECRET"
   fi
 
@@ -417,6 +418,10 @@ EOF
 
   rscp "$(winpath "$tmp/.env")" "$(winpath "$tmp/docker-compose.yml")" "$(winpath "$tmp/backup.sh")" "ec2-user@${PUBLIC_IP}:${REMOTE_DIR}/"
   rm -rf "$tmp"
+  # Amazon Linux 2023 is minimal and ships no cron at all, so `crontab -` failed
+  # with "command not found" and took the whole deployment with it. Install cronie
+  # first; both the install and the crontab rewrite are idempotent.
+  rssh "sudo dnf install -y -q cronie >/dev/null && sudo systemctl enable --now crond"
   rssh "chmod 600 ${REMOTE_DIR}/.env && chmod +x ${REMOTE_DIR}/backup.sh && \
         (crontab -l 2>/dev/null | grep -v disucar-backup; echo '0 2 * * * ${REMOTE_DIR}/backup.sh # disucar-backup') | crontab -"
   ok "Config, compose file and nightly backup installed"
@@ -450,7 +455,20 @@ save_secret() {
   printf '%s=%s\n' "$1" "$2" >> "$SECRETS_FILE"
   chmod 600 "$SECRETS_FILE" 2>/dev/null || true
 }
-load_secret() { grep "^$1=" "$SECRETS_FILE" 2>/dev/null | head -1 | cut -d= -f2- || true; }
+randstr() {
+  # Generates $1 random alphanumerics.
+  #
+  # The obvious one-liner --- tr -dc ... </dev/urandom | head -c N --- looks fine
+  # and fails under this script's `set -o pipefail`: head exits the moment it has
+  # its N bytes, tr dies of SIGPIPE (141), and the pipeline therefore "fails".
+  # Under `set -e` that killed the deployment mid-run with no error message at
+  # all, right after the "Writing runtime configuration" banner. Command
+  # substitution runs in a subshell, so relaxing pipefail here is contained.
+  ( set +o pipefail; LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom 2>/dev/null | head -c "$1" )
+}
+
+load_secret()
+ { grep "^$1=" "$SECRETS_FILE" 2>/dev/null | head -1 | cut -d= -f2- || true; }
 
 require_instance() {
   PUBLIC_IP=$(load_secret PUBLIC_IP)
@@ -498,7 +516,20 @@ cmd_push() {
   ok "http://$PUBLIC_IP"
 }
 
+# Picks up after the images are already on the instance. build_and_ship is the
+# expensive step (a quarter-gigabyte over a home uplink); when a later step fails
+# there is no reason to pay for it twice.
+cmd_resume() {
+  preflight
+  require_instance
+  setup_ssh_tools
+  ship_runtime
+  start_remote || true
+  ok "http://$PUBLIC_IP"
+}
+
 cmd_status() {
+
   preflight
   step "Resources tagged Project=$PROJECT"
   aws_ ec2 describe-instances --filters "Name=tag:Project,Values=$PROJECT" \
@@ -596,6 +627,7 @@ cmd_destroy() {
 case "${1:-deploy}" in
   deploy|"")  cmd_deploy ;;
   --push)     cmd_push ;;
+  --resume)   cmd_resume ;;
   --status)   cmd_status ;;
   --ssh)      cmd_ssh ;;
   --backup)   cmd_backup ;;
