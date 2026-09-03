@@ -20,6 +20,7 @@
 #    ./deploy-aws.sh                provision, build locally, ship, run
 #    ./deploy-aws.sh --push         rebuild and redeploy onto the existing box
 #    ./deploy-aws.sh --resume       finish a run that failed after the upload
+#    ./deploy-aws.sh --ssl HOST EMAIL  put a domain and HTTPS in front of it
 #    ./deploy-aws.sh --status       what exists
 #    ./deploy-aws.sh --ssh          open a shell on the instance
 #    ./deploy-aws.sh --backup       pull a database dump down to this machine
@@ -338,14 +339,20 @@ ship_runtime() {
     save_secret NEXTAUTH_SECRET "$NEXTAUTH_SECRET"
   fi
 
+  # NEXTAUTH_URL has to match the address the browser actually used. Once a
+  # certificate exists that is https://<domain>; until then it is the bare IP.
+  DOMAIN=$(load_secret DOMAIN)
+  if [ -n "$DOMAIN" ]; then APP_URL="https://${DOMAIN}"; else APP_URL="http://${PUBLIC_IP}"; fi
+
   local tmp; tmp=$(mktemp -d)
+
 
   # Secrets travel over SSH and are never echoed to the terminal.
   cat > "$tmp/.env" <<EOF
 DATABASE_URL="postgresql://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}"
 DIRECT_URL="postgresql://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}"
 NEXTAUTH_SECRET="${NEXTAUTH_SECRET}"
-NEXTAUTH_URL="http://${PUBLIC_IP}"
+NEXTAUTH_URL="${APP_URL}"
 NEXT_PUBLIC_SUPABASE_URL="http://localhost:54321"
 NEXT_PUBLIC_SUPABASE_ANON_KEY="placeholder"
 POSTGRES_USER="${DB_USER}"
@@ -391,7 +398,7 @@ services:
       NODE_ENV: production
       TZ: Asia/Manila
     ports:
-      - "80:3000"
+      - "127.0.0.1:3000:3000"
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -528,7 +535,132 @@ cmd_resume() {
   ok "http://$PUBLIC_IP"
 }
 
+# ── TLS ──────────────────────────────────────────────────────────────────────
+# Nginx terminates TLS on the host and proxies to the app on loopback. The app
+# container therefore no longer publishes port 80; if you are upgrading an older
+# deployment, ship_runtime rewrites the compose file to match.
+#
+# Deliberately NOT reusing setup-aws.sh's version of this: that one was written
+# for Ubuntu/AL2 (yum, amazon-linux-extras, ufw, sites-available) and none of it
+# exists on the Amazon Linux 2023 image this script provisions.
+setup_tls() {
+  local domain="$1" email="$2"
+
+  step "Checking DNS before asking for a certificate"
+  # Let's Encrypt has a low failure ceiling (5 per account per hostname per hour).
+  # Burning those on a record that has not propagated yet locks us out of retrying
+  # for an hour, so resolve it ourselves first and fail cheaply.
+  local resolved
+  resolved=$(getent ahostsv4 "$domain" 2>/dev/null | awk 'NR==1{print $1}')
+  if [ -z "$resolved" ]; then
+    resolved=$(nslookup "$domain" 2>/dev/null | awk '/^Address: /{print $2; exit}')
+  fi
+  if [ -z "$resolved" ]; then
+    die "$domain does not resolve yet. Add the A record, wait for it to propagate, then re-run."
+  fi
+  if [ "$resolved" != "$PUBLIC_IP" ]; then
+    die "$domain resolves to $resolved but this instance is $PUBLIC_IP.
+     If the domain sits behind Cloudflare, set the record to DNS only (grey cloud);
+     a proxied record sends the validation to Cloudflare instead of here."
+  fi
+  ok "$domain -> $PUBLIC_IP"
+
+  step "Installing nginx and certbot"
+  rssh "sudo dnf install -y -q nginx >/dev/null && sudo systemctl enable --now nginx"
+  # certbot is not in the AL2023 repos on every AMI revision; pip is the documented
+  # fallback and keeps this working either way.
+  rssh "sudo dnf install -y -q certbot python3-certbot-nginx >/dev/null 2>&1 || \
+        (sudo dnf install -y -q python3-pip >/dev/null && sudo pip3 install -q certbot certbot-nginx && \
+         sudo ln -sf /usr/local/bin/certbot /usr/bin/certbot)"
+  ok "nginx and certbot present"
+
+  step "Configuring the reverse proxy"
+  local tmp; tmp=$(mktemp -d)
+  # conf.d/*.conf is included inside http{}, so the websocket map belongs here.
+  cat > "$tmp/disucar.conf" <<NGINX
+map \$http_upgrade \$connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+server {
+    listen 80;
+    server_name ${domain};
+
+    # CSV/Excel imports post multi-megabyte bodies; nginx's 1m default rejects them.
+    client_max_body_size 25m;
+
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade            \$http_upgrade;
+        proxy_set_header Connection         \$connection_upgrade;
+        proxy_set_header Host               \$host;
+        proxy_set_header X-Real-IP          \$remote_addr;
+        proxy_set_header X-Forwarded-For    \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto  \$scheme;
+        proxy_read_timeout 300s;
+    }
+}
+NGINX
+  rscp "$(winpath "$tmp/disucar.conf")" "ec2-user@${PUBLIC_IP}:/tmp/disucar.conf"
+  rm -rf "$tmp"
+  # SELinux is permissive on stock AL2023, but enforce it and nginx cannot open a
+  # connection to the app at all. Harmless when the boolean is already set.
+  rssh "sudo mv /tmp/disucar.conf /etc/nginx/conf.d/disucar.conf && \
+        (sudo setsebool -P httpd_can_network_connect 1 2>/dev/null || true) && \
+        sudo nginx -t && sudo systemctl reload nginx"
+  ok "Proxying ${domain} to the app"
+
+  step "Requesting the certificate"
+  rssh "sudo certbot --nginx -d ${domain} --non-interactive --agree-tos -m ${email} --redirect"
+  ok "Certificate issued and HTTP redirected to HTTPS"
+
+  step "Scheduling renewal"
+  # Certificates last 90 days. Twice-daily is what Let's Encrypt recommends: renewal
+  # is a no-op until the cert is inside its 30-day window, and two chances a day means
+  # a transient failure is not fatal. Root's crontab, because certbot needs root.
+  rssh "sudo sh -c \"(crontab -l 2>/dev/null | grep -v disucar-certbot; \
+        echo '17 3,15 * * * certbot renew --quiet --deploy-hook \\\"systemctl reload nginx\\\" # disucar-certbot') | crontab -\""
+  ok "Renewal runs twice daily"
+
+  save_secret DOMAIN "$domain"
+  save_secret SSL_EMAIL "$email"
+}
+
+cmd_ssl() {
+  preflight
+  require_instance
+  setup_ssh_tools
+
+  local domain="${1:-}" email="${2:-}"
+  [ -n "$domain" ] || die "Usage: ./deploy-aws.sh --ssl <domain> [email]"
+  email="${email:-$(load_secret SSL_EMAIL)}"
+  [ -n "$email" ] || die "An email is required — Let's Encrypt sends expiry warnings to it.
+     ./deploy-aws.sh --ssl $domain you@example.com"
+
+  # Order matters. The app container currently publishes 0.0.0.0:80, so nginx
+  # cannot bind port 80 until it lets go — starting nginx first just fails.
+  # ship_runtime writes the compose file that moves it to 127.0.0.1:3000.
+  # DOMAIN is not saved yet, so this pass keeps NEXTAUTH_URL on the IP.
+  step "Moving the app off port 80"
+  ship_runtime
+  rssh "cd $REMOTE_DIR && docker compose up -d"
+  ok "App now listens on loopback only"
+
+  setup_tls "$domain" "$email"
+
+  # Second pass: DOMAIN is saved now, so NEXTAUTH_URL becomes https://<domain>.
+  # The app signs its cookies and builds callback URLs from it, so sign-in stays
+  # broken until this runs.
+  step "Pointing the app at its new address"
+  ship_runtime
+  rssh "cd $REMOTE_DIR && docker compose up -d"
+  ok "https://${domain}"
+}
+
 cmd_status() {
+
 
   preflight
   step "Resources tagged Project=$PROJECT"
@@ -612,6 +744,16 @@ cmd_destroy() {
     aws_ ec2 wait instance-terminated --instance-ids $ids
   fi
 
+  # An Elastic IP left allocated after its instance is gone is billed by the hour
+  # for nothing, and is easy to forget because it is invisible from the EC2 list.
+  local alloc
+  alloc=$(load_secret EIP_ALLOC)
+  if [ -n "$alloc" ]; then
+    aws_ ec2 release-address --allocation-id "$alloc" 2>/dev/null \
+      && ok "Released Elastic IP $alloc" \
+      || warn "Could not release Elastic IP $alloc — check the console so it does not bill."
+  fi
+
   find_vpc
   local sg
   sg=$(aws_ ec2 describe-security-groups --filters "Name=group-name,Values=$APP_SG" \
@@ -628,6 +770,7 @@ case "${1:-deploy}" in
   deploy|"")  cmd_deploy ;;
   --push)     cmd_push ;;
   --resume)   cmd_resume ;;
+  --ssl)      shift; cmd_ssl "${1:-}" "${2:-}" ;;
   --status)   cmd_status ;;
   --ssh)      cmd_ssh ;;
   --backup)   cmd_backup ;;
