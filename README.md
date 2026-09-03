@@ -203,13 +203,13 @@ Open [http://localhost:3000](http://localhost:3000)
 
 ---
 
-### AWS — one command from nothing
+### AWS — one command from nothing (free tier)
 
 `deploy-aws.sh` provisions the whole stack (VPC lookup, security groups, key pair,
 RDS PostgreSQL 16, EC2 running the app in Docker) from your own machine.
 
 You only need to do one thing by hand: create an IAM user with programmatic access,
-attach **AmazonEC2FullAccess** and **AmazonRDSFullAccess**, then:
+attach **AmazonEC2FullAccess** (no RDS policy needed — the database runs on the instance), then:
 
 ```bash
 aws configure          # paste the keys here — never into a file in this repo
@@ -224,10 +224,16 @@ aws configure          # paste the keys here — never into a file in this repo
 
 Notes worth knowing before you run it:
 
-- **It costs money** — roughly $32–40/month (EC2 t3.small + RDS db.t4g.micro + IPv4).
-  The script states this and refuses to proceed without an explicit `deploy`.
-- **The database is not public.** Postgres accepts connections only from the app's
-  security group; SSH is restricted to the IP of the machine you run the script from.
+- **Free tier**: one t3.micro, 30 GB EBS and 750 h of IPv4 are $0 for 12 months.
+  Outside it, roughly $12–15/month. The script states this and refuses to proceed
+  without an explicit `deploy`.
+- **Everything runs on one instance**, app and Postgres both in Docker with 2 GB of
+  swap. Postgres is never exposed outside the Docker network; SSH is restricted to
+  the IP of the machine you run the script from.
+- **Images are built locally and shipped** (~250 MB compressed). A 1 GB box cannot
+  build Next.js, and this way what you tested is exactly what runs.
+- **No RDS means no managed snapshots.** A nightly `pg_dump` keeps 7 days on the box;
+  `./deploy-aws.sh --backup` pulls one down.
 - **Generated secrets** (DB password, `NEXTAUTH_SECRET`) are written to
   `~/.disucar-erp-deploy.txt` with mode 600 and never printed or committed.
 - **Everything is tagged `Project=disucar-erp`**, which is how `--destroy` finds it —
