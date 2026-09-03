@@ -32,7 +32,7 @@ set -euo pipefail
 
 # ── Settings ─────────────────────────────────────────────────────────────────
 PROJECT="disucar-erp"
-REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-ap-southeast-1}}"   # Singapore: closest to PH
+REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-ap-southeast-2}}"   # Sydney: the org SCP permits only this region
 
 EC2_TYPE="${EC2_TYPE:-t3.micro}"       # free tier: 750 h/month for 12 months
 EC2_DISK_GB="${EC2_DISK_GB:-30}"       # free tier ceiling for EBS
@@ -71,14 +71,17 @@ setup_ssh_tools() {
   command -v "$SSH_BIN" >/dev/null 2>&1 || [ -x "$SSH_BIN" ] || die "No ssh client found."
 }
 
-# ssh/scp under Windows need a native path, not /c/Users/...
-key_path() {
+# ssh.exe and scp.exe are native Windows binaries: they need C:\... paths, not
+# /c/... or /tmp/..., so every LOCAL path handed to them goes through here first.
+winpath() {
   if [ "$IS_WINDOWS" = true ] && command -v cygpath >/dev/null 2>&1; then
-    cygpath -w "$KEY_FILE"
+    cygpath -w "$1"
   else
-    printf '%s' "$KEY_FILE"
+    printf '%s' "$1"
   fi
 }
+
+key_path() { winpath "$KEY_FILE"; }
 
 lock_key_permissions() {
   if [ "$IS_WINDOWS" = true ]; then
@@ -150,7 +153,21 @@ find_vpc() {
   ok "VPC $VPC_ID"
 }
 
-my_ip() { curl -fsS --max-time 10 https://checkip.amazonaws.com 2>/dev/null | tr -d '[:space:]' || echo ""; }
+# Discover this machine's public IP so SSH can be restricted to it.
+#
+# Verified TLS matters here: if an interception proxy could spoof the answer we would
+# whitelist somebody else's address for SSH. Reuse whatever CA bundle the AWS CLI is
+# configured with, which on a machine running TLS-inspecting antivirus is the only
+# bundle that trusts the interceptor.
+my_ip() {
+  local bundle
+  bundle="${AWS_CA_BUNDLE:-$(aws configure get ca_bundle 2>/dev/null || true)}"
+  if [ -n "$bundle" ] && [ -f "$bundle" ]; then
+    curl -fsS --max-time 10 --cacert "$bundle" https://checkip.amazonaws.com 2>/dev/null | tr -d '[:space:]' || echo ""
+  else
+    curl -fsS --max-time 10 https://checkip.amazonaws.com 2>/dev/null | tr -d '[:space:]' || echo ""
+  fi
+}
 
 setup_security() {
   step "Security group"
@@ -252,7 +269,10 @@ setup_ec2() {
     [ -n "$ami" ] && [ "$ami" != "None" ] || die "Could not resolve an AL2023 AMI in $REGION."
     ok "AMI $ami"
 
-    INSTANCE_ID=$(aws_ ec2 run-instances \
+    # MSYS_NO_PATHCONV stops Git Bash rewriting /dev/xvda into
+    # "C:/Program Files/Git/dev/xvda" before the AWS CLI ever sees it — RunInstances
+    # rejects that as an invalid device name.
+    INSTANCE_ID=$(MSYS_NO_PATHCONV=1 aws_ ec2 run-instances \
       --image-id "$ami" --instance-type "$EC2_TYPE" \
       --key-name "$KEY_NAME" --security-group-ids "$APP_SG_ID" \
       --subnet-id "$SUBNET_ID" --associate-public-ip-address \
@@ -293,7 +313,7 @@ build_and_ship() {
   docker save disucar-app:latest disucar-migrate:latest | gzip -1 > "/tmp/$IMAGE_TAR"
   local size; size=$(du -h "/tmp/$IMAGE_TAR" | cut -f1)
   say "     $size — this is the slow part on a home connection"
-  rscp "/tmp/$IMAGE_TAR" "ec2-user@${PUBLIC_IP}:${REMOTE_DIR}/"
+  rscp "$(winpath "/tmp/$IMAGE_TAR")" "ec2-user@${PUBLIC_IP}:${REMOTE_DIR}/"
   rm -f "/tmp/$IMAGE_TAR"
   ok "Uploaded"
 
@@ -395,7 +415,7 @@ docker exec disucar-db pg_dump -U ${DB_USER} ${DB_NAME} | gzip > backups/disucar
 find backups -name 'disucar-*.sql.gz' -mtime +7 -delete
 EOF
 
-  rscp "$tmp/.env" "$tmp/docker-compose.yml" "$tmp/backup.sh" "ec2-user@${PUBLIC_IP}:${REMOTE_DIR}/"
+  rscp "$(winpath "$tmp/.env")" "$(winpath "$tmp/docker-compose.yml")" "$(winpath "$tmp/backup.sh")" "ec2-user@${PUBLIC_IP}:${REMOTE_DIR}/"
   rm -rf "$tmp"
   rssh "chmod 600 ${REMOTE_DIR}/.env && chmod +x ${REMOTE_DIR}/backup.sh && \
         (crontab -l 2>/dev/null | grep -v disucar-backup; echo '0 2 * * * ${REMOTE_DIR}/backup.sh # disucar-backup') | crontab -"
